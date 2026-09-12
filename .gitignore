@@ -2,3 +2,6 @@ node_modules
 dist
 *.local
 .DS_Store
+
+# Vendored reference repos, cloned on demand (see AGENTS.md)
+docs/vendor/
