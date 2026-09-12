@@ -1,0 +1,4 @@
+allowBuilds:
+  msgpackr-extract: true
+overrides:
+  vite: npm:@voidzero-dev/vite-plus-core@latest
