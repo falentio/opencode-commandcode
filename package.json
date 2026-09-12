@@ -1,7 +1,7 @@
 {
   "name": "@falentio/opencode-commandcode",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenCode plugin for CommandCode",
   "author": "falentio <confirmkevin@gmail.com>",
   "license": "MIT",
@@ -46,8 +46,8 @@
     "@types/node": "^26.1.1",
     "bumpp": "^11.1.0",
     "typescript": "^7.0.2",
-    "vitest": "npm:@voidzero-dev/vite-plus-test@latest",
-    "vite-plus": "latest"
+    "vite-plus": "latest",
+    "vitest": "npm:@voidzero-dev/vite-plus-test@latest"
   },
   "packageManager": "pnpm@12.4.1"
 }
