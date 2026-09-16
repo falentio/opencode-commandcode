@@ -17,12 +17,15 @@ OpenCode installs npm plugins automatically with Bun at startup.
 
 ## What it does
 
-- Logs plugin initialization and session-idle events via `client.app.log`.
-- Registers a `commandcode` tool that OpenCode can call.
+- Adds Command Code as an OpenCode provider.
+- Loads the current model catalog from Command Code at startup.
+- Translates OpenCode requests to Command Code's alpha streaming API.
+- Translates Command Code's NDJSON stream to OpenAI-compatible SSE.
 
-```
-commandcode: <command> (<directory>)
-```
+After installing the plugin, run `/connect` in OpenCode and choose **Command Code**.
+Enter your Command Code API key when prompted.
+
+Choose a model with the `commandcode/<model-id>` provider prefix.
 
 ## Development
 

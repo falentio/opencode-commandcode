@@ -1,39 +1,23 @@
-import type { Plugin } from "@opencode-ai/plugin";
-import { tool } from "@opencode-ai/plugin";
+import type { AuthHook, Config, Hooks, Plugin } from "@opencode-ai/plugin";
+import { fetchCommandCodeCatalog, installCommandCodeProvider } from "./catalog.js";
 
-export const CommandCodePlugin: Plugin = async ({ client, directory }) => {
-  await client.app.log({
-    body: {
-      service: "@falentio/opencode-commandcode",
-      level: "info",
-      message: "CommandCode plugin initialized",
-      extra: { directory },
-    },
-  });
+export { createCommandCode } from "./runtime.js";
 
+function commandCodeAuth(): AuthHook {
   return {
-    event: async ({ event }) => {
-      if (event.type === "session.idle") {
-        await client.app.log({
-          body: {
-            service: "@falentio/opencode-commandcode",
-            level: "debug",
-            message: "Session idle",
-          },
-        });
-      }
-    },
+    provider: "commandcode",
+    methods: [{ type: "api", label: "API key" }],
+  };
+}
 
-    tool: {
-      commandcode: tool({
-        description: "Run a CommandCode command",
-        args: {
-          command: tool.schema.string().describe("The command to run"),
-        },
-        async execute(args, context) {
-          return `commandcode: ${args.command} (${context.directory})`;
-        },
-      }),
-    },
+async function installProvider(config: Config): Promise<void> {
+  const catalog = await fetchCommandCodeCatalog(fetch);
+  installCommandCodeProvider(config, catalog);
+}
+
+export const CommandCodePlugin: Plugin = async (): Promise<Hooks> => {
+  return {
+    auth: commandCodeAuth(),
+    config: installProvider,
   };
 };

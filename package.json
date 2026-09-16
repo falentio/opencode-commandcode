@@ -41,6 +41,9 @@
     "access": "public",
     "provenance": true
   },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "2.0.41"
+  },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.18.30",
     "@types/node": "^26.1.1",
