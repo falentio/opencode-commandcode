@@ -1,7 +1,7 @@
 {
   "name": "@falentio/opencode-commandcode",
   "type": "module",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "OpenCode plugin for CommandCode",
   "author": "falentio <confirmkevin@gmail.com>",
   "license": "MIT",
