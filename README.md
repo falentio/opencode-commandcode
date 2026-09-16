@@ -4,20 +4,14 @@ An [OpenCode](https://opencode.ai) plugin for CommandCode.
 
 ## Install
 
-Add the plugin package to the `plugin` list in your project-level `opencode.json`,
-or in `~/.config/opencode/opencode.json` to enable it for every project:
+Install the plugin globally with the OpenCode CLI:
 
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@falentio/opencode-commandcode"]
-}
+```bash
+opencode plugin -g @falentio/opencode-commandcode
 ```
 
-If the file already has a `plugin` list, add `@falentio/opencode-commandcode` to
-that list instead of replacing the existing entries. OpenCode installs npm
-plugins automatically with Bun at startup, so no separate `npm` or `pnpm`
-install is required.
+The `-g` flag enables the plugin for every project. OpenCode installs the npm
+package automatically.
 
 ## What it does
 
