@@ -4,7 +4,11 @@ export default defineConfig({
   pack: {
     entry: ["src/index.ts"],
     dts: true,
-    exports: true,
+    exports: {
+      customExports: {
+        "./server": "./dist/index.mjs",
+      },
+    },
     sourcemap: true,
   },
 });

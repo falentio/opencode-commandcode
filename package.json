@@ -20,7 +20,8 @@
   ],
   "exports": {
     ".": "./dist/index.mjs",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./server": "./dist/index.mjs"
   },
   "files": [
     "dist"

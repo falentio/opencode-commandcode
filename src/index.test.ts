@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "@opencode-ai/plugin";
+import packageManifest from "../package.json";
 import { CommandCodePlugin } from "./index.js";
 
 const makeClient = () => ({
@@ -20,6 +21,10 @@ afterEach(() => {
 });
 
 describe("CommandCodePlugin", () => {
+  it("exposes the server entrypoint required by OpenCode's plugin installer", () => {
+    expect(packageManifest.exports).toMatchObject({ "./server": "./dist/index.mjs" });
+  });
+
   it("exposes API-key auth without prompts or authorize logic", async () => {
     const hooks = await CommandCodePlugin(makeContext(makeClient()));
 
