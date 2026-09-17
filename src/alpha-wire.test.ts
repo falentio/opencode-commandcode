@@ -8,6 +8,7 @@ import {
   inspectAndWrapAlphaResponse,
   makeUUID,
   parseAlphaEvent,
+  resolveMaxTokens,
   type OpenAIChatRequest,
 } from "./alpha-wire.js";
 import { makeModelId } from "./catalog.js";
@@ -43,6 +44,7 @@ describe("CommandCode alpha wire", () => {
       ],
       stream: false,
       max_output_tokens: 123,
+      reasoning_effort: "high",
       temperature: 0.2,
       top_p: 0.8,
       tools: [{ type: "function", function: { name: "lookup", parameters: { type: "object" } } }],
@@ -98,12 +100,35 @@ describe("CommandCode alpha wire", () => {
         ],
         stream: false,
         max_tokens: 123,
+        reasoning_effort: "high",
         temperature: 0.2,
         system: "Be concise.",
         top_p: 0.8,
         tools: [{ name: "lookup", description: undefined, input_schema: { type: "object" } }],
       },
     });
+  });
+
+  it("resolves explicit and metadata output limits with a safe fallback", () => {
+    expect(resolveMaxTokens({ max_tokens: 1, max_output_tokens: 2 }, 3)).toBe(1);
+    expect(resolveMaxTokens({ max_output_tokens: 2 }, 3)).toBe(2);
+    expect(resolveMaxTokens({}, 3)).toBe(3);
+    expect(resolveMaxTokens({}, undefined)).toBe(64000);
+  });
+
+  it("only puts non-empty reasoning effort strings on the alpha wire", () => {
+    const base: OpenAIChatRequest = { model, messages: [{ role: "user", content: "hello" }] };
+    expect(buildAlphaRequest({ ...base, reasoning_effort: "high" }, () => new Date(), () => uuid).params)
+      .toMatchObject({ reasoning_effort: "high" });
+    expect(buildAlphaRequest({ ...base, reasoning_effort: "" }, () => new Date(), () => uuid).params)
+      .not.toHaveProperty("reasoning_effort");
+    expect(
+      buildAlphaRequest(
+        { ...base, reasoning_effort: 1 as unknown as string },
+        () => new Date(),
+        () => uuid,
+      ).params,
+    ).not.toHaveProperty("reasoning_effort");
   });
 
   it("preserves 9router message and tool conversion behavior", () => {

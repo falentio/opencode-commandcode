@@ -11,11 +11,13 @@ import {
   type OpenAIToolCall,
   type UUID,
 } from "./alpha-wire.js";
-import { COMMAND_CODE_ALPHA_URL, type FetchLike } from "./catalog.js";
+import { COMMAND_CODE_ALPHA_URL, makeModelId, type FetchLike } from "./catalog.js";
+import { lookupStaticModelMetadata, type StaticModelMetadataLookup } from "./model-metadata.js";
 
 export type CommandCodeRuntimeOptions = {
   apiKey?: string;
   fetch?: FetchLike;
+  metadataLookup?: StaticModelMetadataLookup;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -190,6 +192,9 @@ function decodeOpenAIChatRequest(payload: unknown): OpenAIChatRequest {
     ...(optionalNumber(payload, "top_p") === undefined
       ? {}
       : { top_p: optionalNumber(payload, "top_p") }),
+    ...(typeof payload.reasoning_effort === "string" && payload.reasoning_effort.length > 0
+      ? { reasoning_effort: payload.reasoning_effort }
+      : {}),
     ...(tools === undefined ? {} : { tools }),
   };
 }
@@ -210,10 +215,17 @@ function newRequestUUID(): UUID {
 
 export function makeCommandCodeFetch(options: CommandCodeRuntimeOptions): FetchLike {
   const fetcher = options.fetch ?? fetch;
+  const metadataLookup = options.metadataLookup ?? lookupStaticModelMetadata;
 
   return async (_input, init) => {
     const body = decodeOpenAIChatRequest(await readRequestBody(init?.body));
-    const request = buildAlphaRequest(body, () => new Date(), newRequestUUID);
+    const modelId = makeModelId(body.model);
+    const request = buildAlphaRequest(
+      body,
+      () => new Date(),
+      newRequestUUID,
+      metadataLookup(modelId)?.outputLimit,
+    );
     const sessionId = newRequestUUID();
     const headers: Record<string, string> = {
       "Content-Type": "application/json",

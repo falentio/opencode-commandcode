@@ -32,6 +32,7 @@
     "test": "vp test",
     "typecheck": "tsc --noEmit",
     "release": "bumpp",
+    "models:refresh": "node scripts/generate-model-metadata.mjs",
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {

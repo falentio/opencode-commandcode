@@ -1,4 +1,5 @@
 import { makeModelId, type ModelId } from "./catalog.js";
+import { DEFAULT_OUTPUT_LIMIT } from "./model-metadata.js";
 
 export type UUID = string & {
   readonly __brand: "CommandCodeUUID";
@@ -46,6 +47,7 @@ export type CommandCodeParams = {
   system?: string;
   tools?: readonly CommandCodeTool[];
   top_p?: number;
+  reasoning_effort?: string;
 };
 
 export type CommandCodeAlphaRequest = {
@@ -96,6 +98,7 @@ export type OpenAIChatRequest = {
   temperature?: number;
   top_p?: number;
   tools?: readonly OpenAITool[];
+  reasoning_effort?: string;
 };
 
 export type AlphaUsage = {
@@ -363,10 +366,25 @@ export function convertTools(
   return converted.length > 0 ? converted : undefined;
 }
 
+export function resolveMaxTokens(
+  body: Pick<OpenAIChatRequest, "max_tokens" | "max_output_tokens">,
+  outputLimit: number | undefined = DEFAULT_OUTPUT_LIMIT,
+): number {
+  if (body.max_tokens !== undefined) return body.max_tokens;
+  if (body.max_output_tokens !== undefined) return body.max_output_tokens;
+  if (outputLimit !== undefined) return outputLimit;
+  return DEFAULT_OUTPUT_LIMIT;
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
 export function buildAlphaRequest(
   body: OpenAIChatRequest,
   now: () => Date,
   newUUID: () => UUID,
+  outputLimit: number | undefined = DEFAULT_OUTPUT_LIMIT,
 ): CommandCodeAlphaRequest {
   const model = makeModelId(body.model);
   const converted = convertMessages(body.messages);
@@ -374,10 +392,11 @@ export function buildAlphaRequest(
     model,
     messages: converted.messages,
     stream: body.stream === true,
-    max_tokens: body.max_tokens ?? body.max_output_tokens ?? 64000,
+    max_tokens: resolveMaxTokens(body, outputLimit),
     temperature: body.temperature ?? 0.3,
     ...(converted.system === undefined ? {} : { system: converted.system }),
     ...(body.top_p === undefined ? {} : { top_p: body.top_p }),
+    ...(nonEmptyString(body.reasoning_effort) ? { reasoning_effort: body.reasoning_effort } : {}),
   };
   const tools = convertTools(body.tools);
   if (tools) params.tools = tools;
@@ -978,7 +997,7 @@ export async function collectOpenAISseAsJson(
   let responseId = `chatcmpl-${Date.now()}`;
   let created = Math.floor(Date.now() / 1000);
   let responseModel: string = model;
-  let role: "assistant" = "assistant";
+  let role = "assistant" as const;
   let content = "";
   let reasoning = "";
   let finishReason = "stop";

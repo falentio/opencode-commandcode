@@ -1,5 +1,6 @@
 import type { AuthHook, Config, Hooks, Plugin } from "@opencode-ai/plugin";
 import { fetchCommandCodeCatalog, installCommandCodeProvider } from "./catalog.js";
+import { lookupStaticModelMetadata } from "./model-metadata.js";
 
 export { createCommandCode } from "./runtime.js";
 
@@ -12,7 +13,7 @@ function commandCodeAuth(): AuthHook {
 
 async function installProvider(config: Config): Promise<void> {
   const catalog = await fetchCommandCodeCatalog(fetch);
-  installCommandCodeProvider(config, catalog);
+  installCommandCodeProvider(config, catalog, lookupStaticModelMetadata);
 }
 
 export const CommandCodePlugin: Plugin = async (): Promise<Hooks> => {

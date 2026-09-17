@@ -42,10 +42,11 @@ describe("CommandCodePlugin", () => {
           object: "list",
           data: [
             {
-              id: "moonshotai/Kimi-K2.6",
-              name: "Kimi K2.6",
-              context_length: 256000,
+              id: "gpt-5.5",
+              name: "GPT-5.5",
+              context_length: 1000000,
               created: 1789549210,
+              reasoning_options: [{ type: "effort", values: ["low", "high"] }],
             },
           ],
         }),
@@ -73,12 +74,16 @@ describe("CommandCodePlugin", () => {
       options: { timeout: 120000 },
     });
     expect(config.provider?.commandcode?.models).toEqual({
-      "moonshotai/Kimi-K2.6": expect.objectContaining({
-        id: "moonshotai/Kimi-K2.6",
-        name: "Kimi K2.6",
-        limit: { context: 256000, output: 64000 },
+      "gpt-5.5": expect.objectContaining({
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        limit: { context: 1000000, output: 128000 },
         reasoning: true,
         tool_call: true,
+        variants: {
+          low: { reasoningEffort: "low" },
+          high: { reasoningEffort: "high" },
+        },
       }),
     });
   });
