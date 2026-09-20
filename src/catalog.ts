@@ -310,12 +310,13 @@ export function toCommandCodeModelConfig(
       ? true
       : reasoning;
   const variants = effectiveReasoning ? toOpenCodeVariants(reasoningOptions) : undefined;
+  const vision = staticMetadata?.vision !== false;
 
   return {
     id: item.id,
     name: item.name || item.id,
     ...(releaseDate === undefined ? {} : { release_date: releaseDate }),
-    attachment: false,
+    attachment: vision,
     reasoning: effectiveReasoning,
     temperature,
     tool_call: toolCall,
@@ -327,7 +328,7 @@ export function toCommandCodeModelConfig(
     },
     limit: { context: item.contextLength, output: outputLimit },
     modalities: {
-      input: ["text"],
+      input: vision ? ["text", "image"] : ["text"],
       output: ["text"],
     },
     status: "active",

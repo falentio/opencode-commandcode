@@ -100,6 +100,12 @@ function outputLimit(value) {
   return positiveNumber(value.max_output_tokens);
 }
 
+function visionFromModalities(modalities) {
+  if (!isRecord(modalities) || !Array.isArray(modalities.input)) return undefined;
+  if (modalities.input.some((item) => typeof item !== "string")) return undefined;
+  return modalities.input.includes("image");
+}
+
 function normalizeMetadata(value, sourceProvider) {
   if (!isRecord(value)) return undefined;
   const metadata = { sourceProvider };
@@ -145,6 +151,12 @@ function normalizeMetadata(value, sourceProvider) {
   if (Object.hasOwn(value, "release_date")) {
     if (typeof value.release_date !== "string" || value.release_date.length === 0) return undefined;
     metadata.releaseDate = value.release_date;
+  }
+
+  if (Object.hasOwn(value, "modalities")) {
+    const vision = visionFromModalities(value.modalities);
+    if (vision === undefined) return undefined;
+    metadata.vision = vision;
   }
 
   return metadata;

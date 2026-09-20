@@ -25,6 +25,18 @@ describe("model metadata generator", () => {
                 limit: { output: 128000 },
                 release_date: "2026-01-01",
               },
+              sight: {
+                limit: { output: 1000 },
+                modalities: { input: ["text", "image"], output: ["text"] },
+              },
+              blind: {
+                limit: { output: 1000 },
+                modalities: { input: ["text"], output: ["text"] },
+              },
+              broken: {
+                limit: { output: 1000 },
+                modalities: { input: "text" },
+              },
             },
           },
           openrouter: {
@@ -53,6 +65,9 @@ describe("model metadata generator", () => {
             { id: "vendor/model" },
             { id: "plain" },
             { id: "fallback/model" },
+            { id: "sight" },
+            { id: "blind" },
+            { id: "broken" },
             { id: "missing" },
           ],
         }),
@@ -71,7 +86,7 @@ describe("model metadata generator", () => {
       execFileSync(process.execPath, [...args, "--out", secondOutput], { encoding: "utf8" });
 
       expect(readFileSync(firstOutput, "utf8")).toBe(readFileSync(secondOutput, "utf8"));
-      expect(output).toContain("Unmatched IDs: missing");
+      expect(output).toContain("Unmatched IDs: broken, missing");
       expect(readFileSync(firstOutput, "utf8")).toContain(
         '"plain": {"sourceProvider":"opencode"',
       );
@@ -84,6 +99,11 @@ describe("model metadata generator", () => {
       expect(readFileSync(firstOutput, "utf8")).not.toContain("cost");
       expect(readFileSync(firstOutput, "utf8")).not.toContain("modalities");
       expect(readFileSync(firstOutput, "utf8")).toContain('"outputLimit":128000');
+      expect(readFileSync(firstOutput, "utf8")).toContain('"sight": {"sourceProvider":"opencode"');
+      expect(readFileSync(firstOutput, "utf8")).toContain('"vision":true');
+      expect(readFileSync(firstOutput, "utf8")).toContain('"vision":false');
+      expect(readFileSync(firstOutput, "utf8")).not.toContain('"broken"');
+      expect(output).toContain("broken");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

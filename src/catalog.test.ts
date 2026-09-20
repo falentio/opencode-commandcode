@@ -210,6 +210,19 @@ describe("CommandCode catalog", () => {
     });
   });
 
+  it("advertises image input only for models with vision support", () => {
+    expect(
+      toCommandCodeModelConfig(item(), { vision: true, sourceProvider: "static" }),
+    ).toMatchObject({ attachment: true, modalities: { input: ["text", "image"] } });
+    expect(
+      toCommandCodeModelConfig(item(), { vision: false, sourceProvider: "static" }),
+    ).toMatchObject({ attachment: false, modalities: { input: ["text"] } });
+    expect(toCommandCodeModelConfig(item(), undefined)).toMatchObject({
+      attachment: true,
+      modalities: { input: ["text", "image"] },
+    });
+  });
+
   it("rejects an empty usable catalog", () => {
     expect(() => decodeCommandCodeCatalog({ object: "list", data: [] })).toThrow(
       "contains no usable models",

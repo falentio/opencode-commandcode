@@ -20,6 +20,11 @@ export type CommandCodeRuntimeOptions = {
   metadataLookup?: StaticModelMetadataLookup;
 };
 
+// Mirrored Command Code CLI version our wire matches.
+// The gateway rejects older versions, so this must track the CLI release
+// from /tmp/opencode/cmd-llm-api.verbose.md, not this package's version.
+const MIRRORED_COMMAND_CODE_VERSION = "1.54.1";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -79,9 +84,12 @@ function decodeMessage(value: unknown): OpenAIMessage | undefined {
     }
   }
 
+  const reasoningContent = value.reasoning_content ?? value.reasoning;
+
   return {
     role,
     content: value.content,
+    ...(reasoningContent === undefined ? {} : { reasoning_content: reasoningContent }),
     ...(toolCalls === undefined ? {} : { tool_calls: toolCalls }),
     ...(value.tool_call_id === undefined ? {} : { tool_call_id: value.tool_call_id }),
     ...(value.name === undefined ? {} : { name: value.name }),
@@ -220,17 +228,20 @@ export function makeCommandCodeFetch(options: CommandCodeRuntimeOptions): FetchL
   return async (_input, init) => {
     const body = decodeOpenAIChatRequest(await readRequestBody(init?.body));
     const modelId = makeModelId(body.model);
+    const staticMetadata = metadataLookup(modelId);
     const request = buildAlphaRequest(
       body,
       () => new Date(),
       newRequestUUID,
-      metadataLookup(modelId)?.outputLimit,
+      staticMetadata?.outputLimit,
+      staticMetadata?.vision,
     );
     const sessionId = newRequestUUID();
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "x-command-code-version": "0.25.7",
-      "x-cli-environment": "cli",
+      "User-Agent": "cli",
+      "x-command-code-version": MIRRORED_COMMAND_CODE_VERSION,
+      "x-cli-environment": "production",
       "x-session-id": sessionId,
       Accept: "text/event-stream",
     };

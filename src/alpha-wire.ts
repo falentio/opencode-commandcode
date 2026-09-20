@@ -7,6 +7,8 @@ export type UUID = string & {
 
 export type CommandCodeContentBlock =
   | { type: "text"; text: string }
+  | { type: "reasoning"; text: string }
+  | { type: "image"; image: string; mimeType: string }
   | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown }
   | {
       type: "tool-result";
@@ -43,7 +45,7 @@ export type CommandCodeParams = {
   messages: readonly CommandCodeMessage[];
   stream: boolean;
   max_tokens: number;
-  temperature: number;
+  temperature?: number;
   system?: string;
   tools?: readonly CommandCodeTool[];
   top_p?: number;
@@ -54,7 +56,10 @@ export type CommandCodeAlphaRequest = {
   model: ModelId;
   stream: true;
   threadId: UUID;
-  memory: "";
+  memory: null;
+  taste: null;
+  skills: null;
+  permissionMode: "standard";
   config: CommandCodeConfig;
   params: CommandCodeParams;
 };
@@ -62,6 +67,7 @@ export type CommandCodeAlphaRequest = {
 export type OpenAIMessage = {
   role: "system" | "user" | "assistant" | "tool";
   content: unknown;
+  reasoning_content?: unknown;
   tool_calls?: readonly OpenAIToolCall[];
   tool_call_id?: string;
   name?: string;
@@ -105,6 +111,9 @@ export type AlphaUsage = {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheWriteTokens1h?: number;
 };
 
 export type AlphaEvent =
@@ -129,6 +138,7 @@ export type AlphaEvent =
     }
   | { type: "tool-input-end"; id?: string }
   | { type: "tool-call"; toolCallId?: string; toolName?: string; input?: unknown }
+  | { type: "provider-metadata"; usage?: AlphaUsage }
   | { type: "finish-step"; finishReason?: string; usage?: AlphaUsage }
   | { type: "finish"; finishReason?: string; totalUsage?: AlphaUsage }
   | { type: "error"; error?: unknown; message?: unknown; statusCode?: number };
@@ -154,6 +164,7 @@ type OpenAIChunk = {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    prompt_tokens_details?: { cached_tokens?: number };
   };
 };
 
@@ -189,6 +200,7 @@ type OpenAIResponse = {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    prompt_tokens_details?: { cached_tokens?: number };
   };
 };
 
@@ -213,11 +225,28 @@ function optionalUsage(record: Record<string, unknown>, key: string): AlphaUsage
   const inputTokens = optionalNumber(value, "inputTokens");
   const outputTokens = optionalNumber(value, "outputTokens");
   const totalTokens = optionalNumber(value, "totalTokens");
-  return {
+  const cacheReadTokens = optionalNumber(value, "cacheReadTokens");
+  const cacheWriteTokens = optionalNumber(value, "cacheWriteTokens");
+  const cacheWriteTokens1h = optionalNumber(value, "cacheWriteTokens1h");
+  const usage: AlphaUsage = {
     ...(inputTokens === undefined ? {} : { inputTokens }),
     ...(outputTokens === undefined ? {} : { outputTokens }),
     ...(totalTokens === undefined ? {} : { totalTokens }),
+    ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+    ...(cacheWriteTokens1h === undefined ? {} : { cacheWriteTokens1h }),
   };
+  return Object.keys(usage).length > 0 ? usage : undefined;
+}
+
+function mergeUsage(into: AlphaUsage | undefined, extra: AlphaUsage | undefined): AlphaUsage | undefined {
+  if (!extra) return into;
+  if (!into) return { ...extra };
+  const merged: AlphaUsage = { ...into };
+  for (const [key, value] of Object.entries(extra)) {
+    if (typeof value === "number") (merged as Record<string, number>)[key] = value;
+  }
+  return merged;
 }
 
 export function makeUUID(value: string): UUID {
@@ -245,6 +274,61 @@ function flattenText(content: unknown): string {
   return String(content);
 }
 
+function flattenReasoning(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    const parts: string[] = [];
+    for (const part of value) {
+      if (typeof part === "string") parts.push(part);
+      else if (isRecord(part) && typeof part.text === "string") parts.push(part.text);
+    }
+    return parts.join("\n");
+  }
+  return "";
+}
+
+const WIRE_TOOL_RENAMES: Readonly<Record<string, string>> = {
+  tool_search: "search_tools",
+};
+
+export function toWireToolName(name: string): string {
+  return WIRE_TOOL_RENAMES[name] ?? name;
+}
+
+function parseDataUri(url: string): { mimeType: string } | undefined {
+  const match = /^data:([^;,]+)?(?:;base64)?,/.exec(url);
+  if (!match) return undefined;
+  return { mimeType: match[1] || "application/octet-stream" };
+}
+
+function extractImageUrl(part: Record<string, unknown>): string | undefined {
+  const direct = part.image ?? part.url;
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  for (const key of ["image_url", "imageUrl", "file"]) {
+    const nested = part[key];
+    if (typeof nested === "string" && nested.length > 0) return nested;
+    if (isRecord(nested)) {
+      const url = nested.url ?? nested.file_data ?? nested.data;
+      if (typeof url === "string" && url.length > 0) return url;
+    }
+  }
+  return undefined;
+}
+
+function toImageBlock(url: string): CommandCodeContentBlock {
+  if (url.startsWith("data:")) {
+    const parsed = parseDataUri(url);
+    if (parsed && url.includes(";base64,")) {
+      return { type: "image", image: url, mimeType: parsed.mimeType };
+    }
+    return { type: "text", text: "[image omitted: unsupported data URL]" };
+  }
+  if (/^https?:\/\//.test(url)) {
+    return { type: "text", text: `[image: ${url}]` };
+  }
+  return { type: "text", text: "[image omitted: unsupported format]" };
+}
+
 export function toContentBlocks(content: unknown): readonly CommandCodeContentBlock[] {
   if (content == null) return [{ type: "text", text: "" }];
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -259,7 +343,8 @@ export function toContentBlocks(content: unknown): readonly CommandCodeContentBl
       if (part.type === "text" && typeof part.text === "string") {
         blocks.push({ type: "text", text: part.text });
       } else if (part.type === "image_url" || part.type === "image") {
-        blocks.push({ type: "text", text: "[image omitted]" });
+        const url = extractImageUrl(part);
+        blocks.push(url === undefined ? { type: "text", text: "[image omitted]" } : toImageBlock(url));
       } else if (typeof part.text === "string") {
         blocks.push({ type: "text", text: part.text });
       }
@@ -267,6 +352,44 @@ export function toContentBlocks(content: unknown): readonly CommandCodeContentBl
     return blocks.length > 0 ? blocks : [{ type: "text", text: "" }];
   }
   return [{ type: "text", text: String(content) }];
+}
+
+function isImageBlock(block: CommandCodeContentBlock): boolean {
+  return block.type === "image";
+}
+
+export const TEXT_ONLY_IMAGE_FALLBACK = "[image omitted: the active model is text-only]";
+
+export function stripImagesFromMessages(
+  messages: readonly CommandCodeMessage[],
+): readonly CommandCodeMessage[] {
+  let lastImageIndex = -1;
+  messages.forEach((message, index) => {
+    if (message.role === "user" && message.content.some(isImageBlock)) lastImageIndex = index;
+  });
+  if (lastImageIndex === -1) return messages;
+
+  return messages.map((message, index) => {
+    if (message.role !== "user" || !message.content.some(isImageBlock)) return message;
+    if (index === lastImageIndex) {
+      let imageIndex = 0;
+      const content: CommandCodeContentBlock[] = message.content.map((block) =>
+        isImageBlock(block)
+          ? { type: "text", text: `<attached_image index="${imageIndex++}">` }
+          : block,
+      );
+      return { ...message, content };
+    }
+    const remaining = message.content.filter((block) => !isImageBlock(block));
+    const fallback: CommandCodeContentBlock = {
+      type: "text",
+      text: TEXT_ONLY_IMAGE_FALLBACK,
+    };
+    return {
+      ...message,
+      content: remaining.length > 0 ? remaining : [fallback],
+    };
+  });
 }
 
 function safeParseJson(value: unknown): unknown {
@@ -279,12 +402,25 @@ function safeParseJson(value: unknown): unknown {
   }
 }
 
-export function convertMessages(messages: readonly OpenAIMessage[]): {
+export function convertMessages(
+  messages: readonly OpenAIMessage[],
+  supportsVision: boolean | undefined = undefined,
+): {
   messages: readonly CommandCodeMessage[];
   system?: string;
 } {
   const converted: CommandCodeMessage[] = [];
   const systemTexts: string[] = [];
+
+  const toolNameById = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    for (const toolCall of message.tool_calls ?? []) {
+      const id = toolCall.id;
+      const name = toolCall.function?.name;
+      if (id && name) toolNameById.set(id, toWireToolName(name));
+    }
+  }
 
   for (const message of messages) {
     if (message.role === "system") {
@@ -296,13 +432,18 @@ export function convertMessages(messages: readonly OpenAIMessage[]): {
     if (message.role === "tool") {
       const value =
         typeof message.content === "string" ? message.content : flattenText(message.content);
+      const toolCallId = message.tool_call_id || "unknown";
+      const toolName =
+        message.name && message.name.length > 0
+          ? toWireToolName(message.name)
+          : (toolNameById.get(toolCallId) ?? "");
       converted.push({
         role: "tool",
         content: [
           {
             type: "tool-result",
-            toolCallId: message.tool_call_id || "",
-            toolName: message.name || "",
+            toolCallId,
+            toolName,
             output: { type: "text", value },
           },
         ],
@@ -312,14 +453,37 @@ export function convertMessages(messages: readonly OpenAIMessage[]): {
 
     if (message.role === "assistant") {
       const content: CommandCodeContentBlock[] = [];
-      const text = flattenText(message.content);
+      const reasoning = flattenReasoning(message.reasoning_content);
+      if (reasoning) content.push({ type: "reasoning", text: reasoning });
+      const textSource = Array.isArray(message.content)
+        ? message.content.filter(
+            (part) =>
+              !(
+                isRecord(part) &&
+                (part.type === "reasoning" || part.type === "thinking")
+              ),
+          )
+        : message.content;
+      if (Array.isArray(message.content)) {
+        for (const part of message.content) {
+          if (
+            isRecord(part) &&
+            (part.type === "reasoning" || part.type === "thinking") &&
+            typeof part.text === "string" &&
+            part.text.length > 0
+          ) {
+            content.push({ type: "reasoning", text: part.text });
+          }
+        }
+      }
+      const text = flattenText(textSource);
       if (text) content.push({ type: "text", text });
 
       for (const toolCall of message.tool_calls ?? []) {
         content.push({
           type: "tool-call",
-          toolCallId: toolCall.id || "",
-          toolName: toolCall.function?.name || "",
+          toolCallId: toolCall.id || "unknown",
+          toolName: toWireToolName(toolCall.function?.name || ""),
           input: safeParseJson(toolCall.function?.arguments),
         });
       }
@@ -334,8 +498,9 @@ export function convertMessages(messages: readonly OpenAIMessage[]): {
     converted.push({ role: "user", content: toContentBlocks(message.content) });
   }
 
+  const visible = supportsVision === false ? stripImagesFromMessages(converted) : converted;
   const system = systemTexts.join("\n\n");
-  return system ? { messages: converted, system } : { messages: converted };
+  return system ? { messages: visible, system } : { messages: visible };
 }
 
 export function convertTools(
@@ -385,15 +550,16 @@ export function buildAlphaRequest(
   now: () => Date,
   newUUID: () => UUID,
   outputLimit: number | undefined = DEFAULT_OUTPUT_LIMIT,
+  supportsVision: boolean | undefined = undefined,
 ): CommandCodeAlphaRequest {
   const model = makeModelId(body.model);
-  const converted = convertMessages(body.messages);
+  const converted = convertMessages(body.messages, supportsVision);
   const params: CommandCodeParams = {
     model,
     messages: converted.messages,
-    stream: body.stream === true,
+    stream: true,
     max_tokens: resolveMaxTokens(body, outputLimit),
-    temperature: body.temperature ?? 0.3,
+    ...(body.temperature === undefined ? {} : { temperature: body.temperature }),
     ...(converted.system === undefined ? {} : { system: converted.system }),
     ...(body.top_p === undefined ? {} : { top_p: body.top_p }),
     ...(nonEmptyString(body.reasoning_effort) ? { reasoning_effort: body.reasoning_effort } : {}),
@@ -405,11 +571,14 @@ export function buildAlphaRequest(
     model,
     stream: true,
     threadId: newUUID(),
-    memory: "",
+    memory: null,
+    taste: null,
+    skills: null,
+    permissionMode: "standard",
     config: {
       workingDir: process.cwd(),
       date: now().toISOString().slice(0, 10),
-      environment: process.platform,
+      environment: `${process.platform} ${process.arch}`,
       structure: [],
       isGitRepo: false,
       currentBranch: "",
@@ -549,6 +718,26 @@ function isVisibleEvent(event: AlphaEvent | undefined): boolean {
   );
 }
 
+function readAlphaUsageFields(record: Record<string, unknown>): AlphaUsage | undefined {
+  const usage: AlphaUsage = {};
+  let found = false;
+  for (const [wireKey, usageKey] of [
+    ["inputTokens", "inputTokens"],
+    ["outputTokens", "outputTokens"],
+    ["totalTokens", "totalTokens"],
+    ["cacheReadTokens", "cacheReadTokens"],
+    ["cacheWriteTokens", "cacheWriteTokens"],
+    ["cacheWriteTokens1h", "cacheWriteTokens1h"],
+  ] as const) {
+    const value = optionalNumber(record, wireKey);
+    if (value !== undefined) {
+      usage[usageKey] = value;
+      found = true;
+    }
+  }
+  return found ? usage : undefined;
+}
+
 export function parseAlphaEvent(line: string): AlphaEvent | undefined {
   const trimmed = line.trim();
   if (!trimmed) return undefined;
@@ -635,6 +824,15 @@ export function parseAlphaEvent(line: string): AlphaEvent | undefined {
           : { toolName: optionalString(payload, "toolName") }),
         ...(Object.hasOwn(payload, "input") ? { input: payload.input } : {}),
       };
+    case "provider-metadata": {
+      const usage =
+        optionalUsage(payload, "usage") ??
+        optionalUsage(payload, "totalUsage") ??
+        readAlphaUsageFields(payload);
+      return { type: "provider-metadata", ...(usage === undefined ? {} : { usage }) };
+    }
+    case "server_tool_result":
+      return undefined;
     case "finish-step":
       return {
         type: "finish-step",
@@ -827,6 +1025,9 @@ function usageChunk(usage: AlphaUsage | undefined): OpenAIChunk["usage"] | undef
     prompt_tokens: promptTokens,
     completion_tokens: completionTokens,
     total_tokens: usage.totalTokens ?? promptTokens + completionTokens,
+    ...(usage.cacheReadTokens === undefined
+      ? {}
+      : { prompt_tokens_details: { cached_tokens: usage.cacheReadTokens } }),
   };
 }
 
@@ -911,12 +1112,15 @@ function eventToChunks(event: AlphaEvent, state: StreamState): OpenAIChunk[] {
     }
     case "finish-step":
       state.finishReason = toOpenAIFinish(event.finishReason);
-      if (event.usage) state.usage = event.usage;
+      if (event.usage) state.usage = mergeUsage(state.usage, event.usage);
+      return [];
+    case "provider-metadata":
+      if (event.usage) state.usage = mergeUsage(state.usage, event.usage);
       return [];
     case "finish": {
       const finishReason = state.finishReason || toOpenAIFinish(event.finishReason || "stop");
       const chunk = makeChunk(state, {}, finishReason);
-      const usage = usageChunk(event.totalUsage || state.usage);
+      const usage = usageChunk(mergeUsage(state.usage, event.totalUsage));
       if (usage) chunk.usage = usage;
       return [chunk];
     }
@@ -984,7 +1188,17 @@ function readUsage(value: unknown): OpenAIChunk["usage"] | undefined {
   const total = value.total_tokens;
   if (typeof prompt !== "number" || typeof completion !== "number" || typeof total !== "number")
     return undefined;
-  return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: total };
+  const details = isRecord(value.prompt_tokens_details)
+    ? value.prompt_tokens_details
+    : undefined;
+  const cached =
+    details && typeof details.cached_tokens === "number" ? details.cached_tokens : undefined;
+  return {
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    total_tokens: total,
+    ...(cached === undefined ? {} : { prompt_tokens_details: { cached_tokens: cached } }),
+  };
 }
 
 export async function collectOpenAISseAsJson(

@@ -35,8 +35,9 @@ describe("CommandCode runtime", () => {
     const headers = init?.headers;
     expect(headers).toMatchObject({
       "Content-Type": "application/json",
-      "x-command-code-version": "0.25.7",
-      "x-cli-environment": "cli",
+      "User-Agent": "cli",
+      "x-command-code-version": "1.54.1",
+      "x-cli-environment": "production",
       Accept: "text/event-stream",
       Authorization: "Bearer user_test",
     });
@@ -47,13 +48,45 @@ describe("CommandCode runtime", () => {
     expect(sentBody).toMatchObject({
       model: "model-a",
       stream: true,
-      params: { model: "model-a", stream: false, messages: [{ role: "user" }] },
+      memory: null,
+      permissionMode: "standard",
+      params: { model: "model-a", stream: true, messages: [{ role: "user" }] },
     });
     expect(result).toMatchObject({
       object: "chat.completion",
       model: "model-a",
       choices: [{ message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
       usage: { total_tokens: 3 },
+    });
+  });
+
+  it("strips images on the wire when static metadata reports no vision", async () => {
+    const upstream = vi.fn(async (_input, init) => new Response(ndjson, { headers: init?.headers }));
+    const fetcher = makeCommandCodeFetch({
+      fetch: upstream,
+      metadataLookup: () => ({ vision: false, sourceProvider: "static" }),
+    });
+
+    await fetcher("https://ignored.invalid/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({
+        model: "model-a",
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "image_url", image_url: { url: "data:image/png;base64,abcd" } }],
+          },
+        ],
+      }),
+    });
+
+    const sentBody: unknown = JSON.parse(String(upstream.mock.calls[0][1]?.body));
+    expect(sentBody).toMatchObject({
+      params: {
+        messages: [
+          { role: "user", content: [{ type: "text", text: '<attached_image index="0">' }] },
+        ],
+      },
     });
   });
 

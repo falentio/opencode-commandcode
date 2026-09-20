@@ -10,6 +10,7 @@ export type StaticModelMetadata = {
   temperature?: boolean;
   toolCall?: boolean;
   releaseDate?: string;
+  vision?: boolean;
   sourceProvider: string;
 };
 
