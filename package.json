@@ -36,18 +36,18 @@
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": "^1"
+    "@opencode/ai": "2.0.12",
+    "@opencode/plugin": "2.0.12",
+    "@opencode/schema": "2.0.12"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
     "access": "public",
     "provenance": true
   },
-  "dependencies": {
-    "@ai-sdk/openai-compatible": "2.0.41"
-  },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.18.30",
+    "@opencode/plugin": "2.0.12",
+    "@opencode/schema": "2.0.12",
     "@types/node": "^26.1.1",
     "bumpp": "^11.1.0",
     "typescript": "^7.0.2",
