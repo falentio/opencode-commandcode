@@ -35,6 +35,15 @@ export type CommandCodeRuntimeOptions = {
 // from /tmp/opencode/cmd-llm-api.verbose.md, not this package's version.
 const MIRRORED_COMMAND_CODE_VERSION = "1.54.1";
 
+// The gateway validates `params.max_tokens` with a hard `<= 200000` bound.
+// Probed live: 200001 is rejected on every model with
+// `Too big: expected number to be <=200000 at "params.max_tokens"`, while
+// 200000 is accepted even on a model whose own declared output limit is
+// 32768, so the bound is a field validation and not a per-model limit.
+// Without the clamp, every catalog model whose output limit exceeds the bound
+// fails every request.
+export const COMMAND_CODE_MAX_OUTPUT_TOKENS = 200000;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -271,6 +280,7 @@ export async function translateChatCompletion(
     staticMetadata?.outputLimit,
     staticMetadata?.vision,
   );
+  request.params.max_tokens = Math.min(request.params.max_tokens, COMMAND_CODE_MAX_OUTPUT_TOKENS);
   const sessionId = newRequestUUID();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",

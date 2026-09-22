@@ -418,7 +418,29 @@ describe("CommandCode proxy runtime", () => {
     await expect(proxy.close()).resolves.toBeUndefined();
   });
 
-      it("emits an SSE error frame when the upstream fails mid-stream", async () => {
+  it("clamps max_tokens to the gateway's field bound", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    await translateChatCompletion(
+      { model: "deepseek/deepseek-v4-flash", messages: [{ role: "user", content: "hi" }] },
+      { fetch: fetcher },
+    );
+    await translateChatCompletion(
+      { ...requestBody, max_tokens: 384000 },
+      { fetch: fetcher },
+    );
+
+    expect(sentBody(calls[0])).toMatchObject({ params: { max_tokens: 200000 } });
+    expect(sentBody(calls[1])).toMatchObject({ params: { max_tokens: 200000 } });
+  });
+
+  it("leaves max_tokens below the bound untouched", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    await translateChatCompletion({ ...requestBody, max_tokens: 199999 }, { fetch: fetcher });
+
+    expect(sentBody(calls[0])).toMatchObject({ params: { max_tokens: 199999 } });
+  });
+
+  it("emits an SSE error frame when the upstream fails mid-stream", async () => {
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
