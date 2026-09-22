@@ -1,15 +1,34 @@
-import type { Config } from "@opencode-ai/plugin";
+import type { Model } from "@opencode/schema/model";
+import { modelID, modelVariantID, money, providerID } from "./brands.js";
 import {
   DEFAULT_OUTPUT_LIMIT,
   lookupStaticModelMetadata,
-  toOpenCodeVariants,
-  type OpenCodeVariants,
+  toModelVariants,
   type StaticModelMetadata,
   type StaticModelMetadataLookup,
 } from "./model-metadata.js";
 
 export const COMMAND_CODE_CATALOG_URL = "https://api.commandcode.ai/provider/v1/models";
 export const COMMAND_CODE_ALPHA_URL = "https://api.commandcode.ai/alpha/generate";
+
+// The two upstream URLs are overridable so the plugin can be pointed at a local
+// stand-in for the CommandCode gateway during end-to-end testing.
+export const COMMAND_CODE_CATALOG_URL_ENV = "COMMANDCODE_CATALOG_URL";
+export const COMMAND_CODE_ALPHA_URL_ENV = "COMMANDCODE_ALPHA_URL";
+
+export function resolveCommandCodeCatalogURL(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const override = env[COMMAND_CODE_CATALOG_URL_ENV];
+  return override && override.length > 0 ? override : COMMAND_CODE_CATALOG_URL;
+}
+
+export function resolveCommandCodeAlphaURL(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const override = env[COMMAND_CODE_ALPHA_URL_ENV];
+  return override && override.length > 0 ? override : COMMAND_CODE_ALPHA_URL;
+}
 
 export type FetchLike = typeof fetch;
 
@@ -48,13 +67,7 @@ export type CommandCodeCatalogItem = {
 
 export type CommandCodeCatalog = readonly CommandCodeCatalogItem[];
 
-type OpenCodeModelConfig = NonNullable<
-  NonNullable<NonNullable<Config["provider"]>[string]["models"]>[string]
->;
-
-export type CommandCodeOpenCodeModel = OpenCodeModelConfig & {
-  variants?: OpenCodeVariants;
-};
+export type CommandCodeModelSettings = Readonly<Record<string, unknown>>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -250,16 +263,31 @@ function endpointValueOrDefault<T>(
   return staticValue ?? defaultValue;
 }
 
-function releaseDateFromCreated(created: number | undefined): string | undefined {
-  if (created === undefined) return undefined;
-  const date = new Date(created * 1000);
-  return Number.isNaN(date.getTime()) ? undefined : date.toISOString().slice(0, 10);
+function releasedAt(item: CommandCodeCatalogItem, releaseDate: string | undefined): number {
+  if (releaseDate !== undefined) {
+    const parsed = Date.parse(`${releaseDate}T00:00:00Z`);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  if (item.created !== undefined) {
+    const parsed = item.created * 1000;
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+// `Model.ID`/`Model.VariantID`/`Provider.ID` are `Schema.brand`ed strings, so
+// they are nominal at the type level but plain `string` at runtime. Building
+// them here keeps the brand without importing the schema runtime into the
+// plugin, which would add a resolution dependency for every load.
+function integer(value: number): number {
+  return Math.max(0, Math.floor(value));
 }
 
 export function toCommandCodeModelConfig(
   item: CommandCodeCatalogItem,
   staticMetadata: StaticModelMetadata | undefined = undefined,
-): CommandCodeOpenCodeModel {
+  settings: CommandCodeModelSettings | undefined = undefined,
+): Model.Info {
   const endpoint = item.endpoint ?? {
     reasoning: absent<boolean>(),
     reasoningOptions: absent<ReasoningOptions>(),
@@ -271,12 +299,6 @@ export function toCommandCodeModelConfig(
   const reasoning = endpointValueOrDefault(
     endpoint.reasoning,
     staticMetadata?.reasoning,
-    true,
-    false,
-  );
-  const temperature = endpointValueOrDefault(
-    endpoint.temperature,
-    staticMetadata?.temperature,
     true,
     false,
   );
@@ -293,8 +315,7 @@ export function toCommandCodeModelConfig(
   const releaseDate =
     endpoint.releaseDate.state === "blocked"
       ? undefined
-      : (endpointValue(endpoint.releaseDate, staticMetadata?.releaseDate) ??
-        releaseDateFromCreated(item.created));
+      : endpointValue(endpoint.releaseDate, staticMetadata?.releaseDate);
   const outputLimit = endpointValueOrDefault(
     endpoint.outputLimit,
     staticMetadata?.outputLimit,
@@ -303,72 +324,55 @@ export function toCommandCodeModelConfig(
   );
   const endpointVariants =
     endpoint.reasoningOptions.state === "known"
-      ? toOpenCodeVariants(endpoint.reasoningOptions.value)
+      ? toModelVariants(endpoint.reasoningOptions.value)
       : undefined;
   const effectiveReasoning =
     endpoint.reasoning.state === "absent" && endpointVariants !== undefined
       ? true
       : reasoning;
-  const variants = effectiveReasoning ? toOpenCodeVariants(reasoningOptions) : undefined;
+  const projectedVariants = effectiveReasoning ? toModelVariants(reasoningOptions) : undefined;
   const vision = staticMetadata?.vision !== false;
+  const id = modelID(item.id);
 
   return {
-    id: item.id,
+    id,
+    modelID: id,
+    providerID: providerID("commandcode"),
     name: item.name || item.id,
-    ...(releaseDate === undefined ? {} : { release_date: releaseDate }),
-    attachment: vision,
-    reasoning: effectiveReasoning,
-    temperature,
-    tool_call: toolCall,
-    cost: {
-      input: 0,
-      output: 0,
-      cache_read: 0,
-      cache_write: 0,
-    },
-    limit: { context: item.contextLength, output: outputLimit },
-    modalities: {
+    capabilities: {
+      tools: toolCall,
       input: vision ? ["text", "image"] : ["text"],
       output: ["text"],
     },
+    variants: (projectedVariants ?? []).map((variant) => ({
+      id: modelVariantID(variant.id),
+      settings: variant.settings,
+    })),
+    time: { released: releasedAt(item, releaseDate) },
+    cost: [
+      {
+        input: money(0),
+        output: money(0),
+        cache: { read: money(0), write: money(0) },
+      },
+    ],
     status: "active",
-    options: {},
-    headers: {},
-    ...(variants === undefined ? {} : { variants }),
+    enabled: true,
+    limit: { context: integer(item.contextLength), output: integer(outputLimit) },
+    ...(settings === undefined ? {} : { settings }),
   };
 }
 
-function installModels(
-  config: Config,
-  models: Readonly<Record<string, CommandCodeOpenCodeModel>>,
-): void {
-  const providerModels = models as NonNullable<NonNullable<Config["provider"]>[string]["models"]>;
-  const existing = config.provider?.commandcode;
-  config.provider = {
-    ...config.provider,
-    commandcode: {
-      ...existing,
-      name: "Command Code",
-      npm: "@falentio/opencode-commandcode",
-      api: COMMAND_CODE_ALPHA_URL,
-      models: providerModels,
-    },
-  };
-}
-
-export function installCommandCodeProvider(
-  config: Config,
+export function toCommandCodeModelConfigs(
   catalog: CommandCodeCatalog,
+  baseURL: string,
   lookup: StaticModelMetadataLookup = lookupStaticModelMetadata,
-): void {
-  const models = Object.fromEntries(
-    catalog.map((item) => [item.id, toCommandCodeModelConfig(item, lookup(item.id))]),
-  );
-  installModels(config, models);
+): Model.Info[] {
+  return catalog.map((item) => toCommandCodeModelConfig(item, lookup(item.id), { baseURL }));
 }
 
 export async function fetchCommandCodeCatalog(fetcher: FetchLike): Promise<CommandCodeCatalog> {
-  const response = await fetcher(COMMAND_CODE_CATALOG_URL, {
+  const response = await fetcher(resolveCommandCodeCatalogURL(), {
     headers: { Accept: "application/json" },
   });
 

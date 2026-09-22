@@ -23,24 +23,22 @@ export function lookupStaticModelMetadata(id: ModelId): StaticModelMetadata | un
     : undefined;
 }
 
-export type OpenCodeVariant = {
-  reasoningEffort: string;
+export type ModelVariant = {
+  id: string;
+  settings: { reasoningEffort: string };
 };
-
-export type OpenCodeVariants = Record<string, OpenCodeVariant>;
-
-export function toOpenCodeVariants(
+export function toModelVariants(
   options: ReasoningOptions | undefined,
-): OpenCodeVariants | undefined {
+): ModelVariant[] | undefined {
   if (!options) return undefined;
 
-  const variants = new Map<string, OpenCodeVariant>();
+  const variants = new Map<string, ModelVariant>();
   for (const option of options) {
     if (option.type !== "effort") continue;
     for (const value of option.values) {
-      variants.set(value, { reasoningEffort: value });
+      variants.set(value, { id: value, settings: { reasoningEffort: value } });
     }
   }
 
-  return variants.size > 0 ? Object.fromEntries(variants) : undefined;
+  return variants.size > 0 ? [...variants.values()] : undefined;
 }
