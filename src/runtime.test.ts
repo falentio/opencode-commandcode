@@ -412,7 +412,13 @@ describe("CommandCode proxy runtime", () => {
     await expect(fetch(url)).rejects.toThrow();
   });
 
-        it("emits an SSE error frame when the upstream fails mid-stream", async () => {
+  it("closes twice without rejecting", async () => {
+    const proxy = await startCommandCodeProxy({ fetch: vi.fn() as unknown as FetchLike });
+    await proxy.close();
+    await expect(proxy.close()).resolves.toBeUndefined();
+  });
+
+      it("emits an SSE error frame when the upstream fails mid-stream", async () => {
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
