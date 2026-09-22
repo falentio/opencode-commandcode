@@ -5,23 +5,15 @@ An [OpenCode](https://opencode.ai) v2 plugin for CommandCode.
 ## Install
 
 Add the package to the `plugins` array in your OpenCode config
-(`opencode.json`, `opencode.jsonc`, or `.opencode/opencode.json`):
+(`opencode.json`, `opencode.jsonc`, or `.opencode/opencode.json`).
 
-```json
-{
-  "plugins": ["@falentio/opencode-commandcode"]
-}
-```
+### From a local build (verified)
 
-A bare name is resolved as an npm package, so OpenCode installs it for you.
-You can also install it globally with the CLI:
+Build this checkout, then point the entry at the built directory:
 
 ```bash
-opencode plugin add @falentio/opencode-commandcode
+pnpm install && pnpm build
 ```
-
-To run a local build instead of the published package, point the entry at the
-built directory or file:
 
 ```json
 {
@@ -29,7 +21,29 @@ built directory or file:
 }
 ```
 
-`dist/` must exist before OpenCode loads the plugin; run `pnpm build` first.
+`file:<dir>` is the only install form verified against OpenCode v2. The
+directory must be a package root whose `package.json` resolves the entry
+(this package already does) and must contain the built `dist/`; `pnpm build`
+produces it. An absolute path without the `file:` prefix does not load.
+
+### From the npm registry (not yet available for v2)
+
+```json
+{
+  "plugins": ["@falentio/opencode-commandcode"]
+}
+```
+
+```bash
+opencode plugin add @falentio/opencode-commandcode
+```
+
+Both forms resolve the bare name from the npm registry, and the registry
+currently serves the v1 line. Until this version is published, they install a
+v1 plugin that OpenCode v2 rejects with
+`Plugin must export a default definition with an id and an effect or setup function`,
+and the model then reports as unavailable. Use the `file:` form above until a
+v2 release is on the registry.
 
 ## What it does
 
