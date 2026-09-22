@@ -44,6 +44,36 @@ async function within<T>(promise: Promise<T>, label: string, ms = 2000): Promise
   }
 }
 
+// Emits `first` immediately, then holds the stream open until `release()`.
+// A buffering implementation cannot produce output before the release.
+function gatedStream(
+  first: string,
+  rest: string,
+): { stream: ReadableStream<Uint8Array>; release: () => void } {
+  const encoder = new TextEncoder();
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let stage = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (stage === 0) {
+        stage = 1;
+        controller.enqueue(encoder.encode(first));
+        return;
+      }
+      if (stage === 1) {
+        stage = 2;
+        await gate;
+        controller.enqueue(encoder.encode(rest));
+        controller.close();
+      }
+    },
+  });
+  return { stream, release };
+}
+
 function recordingFetch(reply: () => Response): {
   fetcher: FetchLike;
   calls: UpstreamCall[];
@@ -122,14 +152,34 @@ describe("CommandCode proxy runtime", () => {
   });
 
   it("keeps streaming incremental and sets nested stream true", async () => {
-    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
-    const response = await translateChatCompletion(
-      { ...requestBody, stream: true },
-      { fetch: fetcher },
-    );
+    const first = `${JSON.stringify({ type: "text-delta", text: "hello" })}\n`;
+    const rest = `${JSON.stringify({ type: "finish", finishReason: "stop" })}\n`;
+    const { stream, release } = gatedStream(first, rest);
+    const fetcher: FetchLike = async () => new Response(stream);
+    const proxy = await makeProxy({ fetch: fetcher });
 
-    expect(await response.text()).toContain('"content":"hello"');
-    expect(sentBody(calls[0])).toMatchObject({ params: { stream: true } });
+    const response = await within(
+      fetch(`${proxy.baseURL}/chat/completions`, {
+        method: "POST",
+        body: JSON.stringify({ ...requestBody, stream: true }),
+      }),
+      "the first streamed chunk",
+    );
+    const reader = response.body!.getReader();
+    const firstChunk = await within(reader.read(), "the first streamed chunk");
+    expect(new TextDecoder().decode(firstChunk.value)).toContain('"content":"hello"');
+
+    // The upstream is still open here, so a buffered implementation would have
+    // produced nothing yet.
+    release();
+    let text = new TextDecoder().decode(firstChunk.value);
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      text += new TextDecoder().decode(next.value);
+    }
+    expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
+    expect(text).toContain('"finish_reason":"stop"');
   });
 
   it("cancels the upstream request when the client disconnects mid-stream", async () => {
@@ -285,7 +335,9 @@ describe("CommandCode proxy runtime", () => {
     const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
     await translateChatCompletion({ ...requestBody, model: "gpt-5.5" }, { fetch: fetcher });
 
-    expect(calls.map(([input]) => input)).not.toContain(expect.stringContaining("models.dev"));
+    const urls = calls.map(([input]) => String(input));
+    expect(urls).toHaveLength(1);
+    expect(urls.filter((url) => url.includes("models.dev"))).toEqual([]);
   });
 
   it("resolves the API key per request instead of once at startup", async () => {
