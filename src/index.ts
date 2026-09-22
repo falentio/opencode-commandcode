@@ -6,13 +6,13 @@ import {
   type CommandCodeCatalog,
 } from "./catalog.js";
 import { lookupStaticModelMetadata } from "./model-metadata.js";
-import { startCommandCodeProxy, type CommandCodeProxy } from "./runtime.js";
+import { startCommandCodeProxy } from "./runtime.js";
 
 export const COMMAND_CODE_INTEGRATION_ID = "commandcode";
 export const COMMAND_CODE_PROVIDER_ID = "commandcode";
-// opencode only accepts a `LanguageModel` built by its own bundled provider
-// runtime, so the provider must name the bundled specifier rather than this
-// package. See the port brief: any other specifier fails schema validation.
+// opencode accepts a `LanguageModel` only from its own bundled provider runtime.
+// Any other specifier yields one built from a foreign module instance, which
+// opencode rejects while resolving the model.
 export const COMMAND_CODE_PROVIDER_PACKAGE = "@opencode/ai/providers/openai-compatible";
 
 export type CommandCodePluginDependencies = {
@@ -46,29 +46,27 @@ export function commandCodePlugin(dependencies: CommandCodePluginDependencies = 
         catalog = undefined;
       }
 
-      const proxy: CommandCodeProxy | undefined = await startProxy({
+      const proxy = await startProxy({
         catalog,
         resolveApiKey: () => activeApiKey(context),
       });
 
-      if (proxy) {
-        await context.provider.transform((draft) => {
-          draft.add({
-            info: {
-              id: providerID(COMMAND_CODE_PROVIDER_ID),
-              name: "Command Code",
-              activation: "enabled",
-              package: COMMAND_CODE_PROVIDER_PACKAGE,
-              integrationID: integrationID(COMMAND_CODE_INTEGRATION_ID),
-            },
-            models: toCommandCodeModelConfigs(
-              catalog ?? [],
-              proxy.baseURL,
-              lookupStaticModelMetadata,
-            ),
-          });
+      await context.provider.transform((draft) => {
+        draft.add({
+          info: {
+            id: providerID(COMMAND_CODE_PROVIDER_ID),
+            name: "Command Code",
+            activation: "enabled",
+            package: COMMAND_CODE_PROVIDER_PACKAGE,
+            integrationID: integrationID(COMMAND_CODE_INTEGRATION_ID),
+          },
+          models: toCommandCodeModelConfigs(
+            catalog ?? [],
+            proxy.baseURL,
+            lookupStaticModelMetadata,
+          ),
         });
-      }
+      });
 
       await context.integration.transform((draft) => {
         const id = integrationID(COMMAND_CODE_INTEGRATION_ID);
@@ -82,7 +80,7 @@ export function commandCodePlugin(dependencies: CommandCodePluginDependencies = 
       });
 
       return async () => {
-        await proxy?.close();
+        await proxy.close();
       };
     },
   };
