@@ -51,33 +51,40 @@ export function commandCodePlugin(dependencies: CommandCodePluginDependencies = 
         resolveApiKey: () => activeApiKey(context),
       });
 
-      await context.provider.transform((draft) => {
-        draft.add({
-          info: {
-            id: providerID(COMMAND_CODE_PROVIDER_ID),
-            name: "Command Code",
-            activation: "enabled",
-            package: COMMAND_CODE_PROVIDER_PACKAGE,
-            integrationID: integrationID(COMMAND_CODE_INTEGRATION_ID),
-          },
-          models: toCommandCodeModelConfigs(
-            catalog ?? [],
-            proxy.baseURL,
-            lookupStaticModelMetadata,
-          ),
+      try {
+        await context.provider.transform((draft) => {
+          draft.add({
+            info: {
+              id: providerID(COMMAND_CODE_PROVIDER_ID),
+              name: "Command Code",
+              activation: "enabled",
+              package: COMMAND_CODE_PROVIDER_PACKAGE,
+              integrationID: integrationID(COMMAND_CODE_INTEGRATION_ID),
+            },
+            models: toCommandCodeModelConfigs(
+              catalog ?? [],
+              proxy.baseURL,
+              lookupStaticModelMetadata,
+            ),
+          });
         });
-      });
 
-      await context.integration.transform((draft) => {
-        const id = integrationID(COMMAND_CODE_INTEGRATION_ID);
-        draft.update(id, (integration) => {
-          if (integration.name === COMMAND_CODE_INTEGRATION_ID) integration.name = "Command Code";
+        await context.integration.transform((draft) => {
+          const id = integrationID(COMMAND_CODE_INTEGRATION_ID);
+          draft.update(id, (integration) => {
+            if (integration.name === COMMAND_CODE_INTEGRATION_ID) integration.name = "Command Code";
+          });
+          draft.method.update({
+            integrationID: id,
+            method: { type: "key", label: "API key" },
+          });
         });
-        draft.method.update({
-          integrationID: id,
-          method: { type: "key", label: "API key" },
-        });
-      });
+      } catch (error) {
+        // The listener is already bound and opencode only registers the release
+        // after setup resolves, so nothing else can dispose of it.
+        await proxy.close().catch(() => undefined);
+        throw error;
+      }
 
       return async () => {
         await proxy.close();

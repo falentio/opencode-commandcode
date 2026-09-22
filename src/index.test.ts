@@ -217,6 +217,63 @@ describe("commandCodePlugin", () => {
     expect(recorded.providers[0]?.models).toEqual([]);
   });
 
+  it("closes the proxy when a transform throws", async () => {
+    resetProxyCalls();
+    const recorded: Recorded = { providers: [], methods: [], names: [], order: [] };
+    let closed = false;
+    const plugin = commandCodePlugin({
+      fetchCatalog: async () => catalog,
+      startProxy: async () => ({
+        port: 1,
+        baseURL: "http://127.0.0.1:1/v1",
+        close: async () => {
+          closed = true;
+        },
+      }),
+    });
+
+    const context = {
+      ...makeContext(recorded, undefined),
+      provider: {
+        transform: async () => {
+          throw new Error("transform rejected");
+        },
+      },
+    } as unknown as Context;
+
+    await expect(plugin.setup(context)).rejects.toThrow("transform rejected");
+    expect(closed).toBe(true);
+  });
+
+  it("closes the proxy when the integration transform throws", async () => {
+    resetProxyCalls();
+    const recorded: Recorded = { providers: [], methods: [], names: [], order: [] };
+    let closed = false;
+    const plugin = commandCodePlugin({
+      fetchCatalog: async () => catalog,
+      startProxy: async () => ({
+        port: 1,
+        baseURL: "http://127.0.0.1:1/v1",
+        close: async () => {
+          closed = true;
+        },
+      }),
+    });
+
+    const context = {
+      ...makeContext(recorded, undefined),
+      integration: {
+        ...makeContext(recorded, undefined).integration,
+        transform: async () => {
+          throw new Error("integration rejected");
+        },
+      },
+    } as unknown as Context;
+
+    await expect(plugin.setup(context)).rejects.toThrow("integration rejected");
+    expect(closed).toBe(true);
+  });
+
   it("reads the API key from the active integration connection", async () => {
     resetProxyCalls();
     const recorded: Recorded = { providers: [], methods: [], names: [], order: [] };
