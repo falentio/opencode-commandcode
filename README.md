@@ -13,12 +13,23 @@ Add the package to the `plugins` array in your OpenCode config
 }
 ```
 
-OpenCode installs the package automatically. You can also install it globally
-with the CLI:
+A bare name is resolved as an npm package, so OpenCode installs it for you.
+You can also install it globally with the CLI:
 
 ```bash
 opencode plugin add @falentio/opencode-commandcode
 ```
+
+To run a local build instead of the published package, point the entry at the
+built directory or file:
+
+```json
+{
+  "plugins": ["file:/path/to/opencode-commandcode"]
+}
+```
+
+`dist/` must exist before OpenCode loads the plugin; run `pnpm build` first.
 
 ## What it does
 
@@ -61,7 +72,7 @@ pnpm build      # vp pack
 ```
 
 Build output goes to `dist/` (ESM + type declarations) via `vp pack` (tsdown).
-OpenCode resolves the `./server` subpath of the built package, so `dist/` must
+OpenCode resolves the package entrypoint from `package.json`, so `dist/` must
 exist before the plugin is loaded.
 
 ### Refresh model metadata
