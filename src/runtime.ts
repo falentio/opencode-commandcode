@@ -384,6 +384,16 @@ export async function startCommandCodeProxy(
       return;
     }
 
+    // Registering this before the body read matters: the request stream has
+    // already ended by the time the body is read, so a `request.on("close")`
+    // listener never fires. A request's "close" also fires on normal
+    // completion, so the response's "close" is the signal that actually means
+    // "the client went away before we finished".
+    const abort = new AbortController();
+    response.on("close", () => {
+      if (!response.writableEnded) abort.abort();
+    });
+
     const raw = await readIncomingBody(request);
     let payload: unknown;
     try {
@@ -393,8 +403,6 @@ export async function startCommandCodeProxy(
       return;
     }
 
-    const abort = new AbortController();
-    request.on("close", () => abort.abort());
     try {
       const upstream = await translateChatCompletion(payload, options, abort.signal);
       await writeWebResponse(response, upstream);

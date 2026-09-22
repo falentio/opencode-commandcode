@@ -30,6 +30,20 @@ async function makeProxy(options: CommandCodeProxyOptions = {}) {
   return proxy;
 }
 
+async function within<T>(promise: Promise<T>, label: string, ms = 2000): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function recordingFetch(reply: () => Response): {
   fetcher: FetchLike;
   calls: UpstreamCall[];
@@ -116,6 +130,64 @@ describe("CommandCode proxy runtime", () => {
 
     expect(await response.text()).toContain('"content":"hello"');
     expect(sentBody(calls[0])).toMatchObject({ params: { stream: true } });
+  });
+
+  it("cancels the upstream request when the client disconnects mid-stream", async () => {
+    let upstreamAborted = false;
+    let signal: AbortSignal | undefined;
+    const fetcher: FetchLike = async (_input, init) => {
+      signal = init?.signal ?? undefined;
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(`${JSON.stringify({ type: "text-delta", text: "hello" })}\n`));
+          signal?.addEventListener("abort", () => {
+            upstreamAborted = true;
+            controller.error(new DOMException("aborted", "AbortError"));
+          });
+        },
+      });
+      return new Response(stream);
+    };
+    const proxy = await makeProxy({ fetch: fetcher });
+
+    const client = new AbortController();
+    const pending = fetch(`${proxy.baseURL}/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ ...requestBody, stream: true }),
+      signal: client.signal,
+    });
+    const response = await within(pending, "the streamed response to start");
+    const reader = response.body!.getReader();
+    await within(reader.read(), "the first streamed chunk");
+    client.abort();
+    await reader.cancel().catch(() => undefined);
+
+    const deadline = Date.now() + 2000;
+    while (!upstreamAborted && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    expect(upstreamAborted).toBe(true);
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("does not abort an upstream request that runs to completion", async () => {
+    let signal: AbortSignal | undefined;
+    const fetcher: FetchLike = async (_input, init) => {
+      signal = init?.signal ?? undefined;
+      return new Response(ndjson);
+    };
+    const proxy = await makeProxy({ fetch: fetcher });
+
+    const response = await fetch(`${proxy.baseURL}/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ ...requestBody, stream: true }),
+    });
+    const text = await response.text();
+    expect(text).toContain('"content":"hello"');
+    expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
+
+    // Give the server's own response "close" event time to fire.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(signal?.aborted).toBe(false);
   });
 
   it("accepts max_completion_tokens from the bundled OpenAI-compatible route", async () => {
@@ -339,4 +411,5 @@ describe("CommandCode proxy runtime", () => {
 
     await expect(fetch(url)).rejects.toThrow();
   });
-});
+
+        });
