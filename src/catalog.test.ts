@@ -251,4 +251,33 @@ describe("CommandCode catalog", () => {
       "http://127.0.0.1:1/x",
     );
   });
+
+  // The plugin hands these objects to opencode, which decodes them with its own
+  // `Model.Info` schema before the provider can serve a request. A shape that
+  // drifts here fails at model resolution, not in this package.
+  it("projects models that satisfy the opencode Model.Info schema", async () => {
+    const { Schema } = await import("effect");
+    const { Model } = await import("@opencode/schema/model");
+    const decode = Schema.decodeUnknownSync(Model.Info);
+
+    const cases = [
+      toCommandCodeModelConfig(item(), undefined),
+      toCommandCodeModelConfig(
+        item({
+          reasoningOptions: { state: "known", value: [{ type: "effort", values: ["low", "high"] }] },
+          outputLimit: { state: "known", value: 384000 },
+        }),
+        { reasoning: true, sourceProvider: "static", vision: true },
+        { baseURL: "http://127.0.0.1:1/v1" },
+      ),
+      toCommandCodeModelConfig(
+        item({ releaseDate: { state: "known", value: "2026-01-02" } }),
+        { reasoning: false, sourceProvider: "static", vision: false },
+      ),
+    ];
+
+    for (const projected of cases) {
+      expect(() => decode(projected)).not.toThrow();
+    }
+  });
 });

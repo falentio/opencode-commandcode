@@ -185,6 +185,9 @@ importers:
       bumpp:
         specifier: ^11.1.0
         version: 11.1.0
+      effect:
+        specifier: 4.0.0-rc.112
+        version: 4.0.0-rc.112
       typescript:
         specifier: ^7.0.2
         version: 7.0.2

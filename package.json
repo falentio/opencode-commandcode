@@ -50,6 +50,7 @@
     "@opencode/schema": "2.0.12",
     "@types/node": "^26.1.1",
     "bumpp": "^11.1.0",
+    "effect": "4.0.0-rc.112",
     "typescript": "^7.0.2",
     "vite-plus": "latest",
     "vitest": "npm:@voidzero-dev/vite-plus-test@latest"
