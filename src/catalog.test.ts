@@ -3,6 +3,7 @@ import {
   decodeCommandCodeCatalog,
   fetchCommandCodeCatalog,
   makeModelId,
+  resolveCommandCodeCatalogURL,
   toCommandCodeModelConfig,
   type CommandCodeCatalogItem,
   type CommandCodeEndpointMetadata,
@@ -132,8 +133,9 @@ describe("CommandCode catalog", () => {
       releaseDate: { state: "blocked" },
     });
     expect(
-      toCommandCodeModelConfig(model!, { releaseDate: "2025-01-01", sourceProvider: "static" }),
-    ).not.toHaveProperty("release_date");
+      toCommandCodeModelConfig(model!, { releaseDate: "2025-01-01", sourceProvider: "static" }).time
+        .released,
+    ).toBe(1789549210000);
   });
 
   it("uses known endpoint values over static values", () => {
@@ -158,13 +160,11 @@ describe("CommandCode catalog", () => {
     );
 
     expect(model).toMatchObject({
-      reasoning: false,
-      temperature: false,
-      tool_call: false,
-      release_date: "2026-01-01",
+      capabilities: { tools: false, input: ["text", "image"], output: ["text"] },
       limit: { context: 1000000, output: 123 },
+      time: { released: Date.parse("2026-01-01T00:00:00Z") },
     });
-    expect(model.variants).toBeUndefined();
+    expect(model.variants).toEqual([]);
   });
 
   it("falls back per field and lets explicit empty or blocked values suppress variants", () => {
@@ -178,22 +178,25 @@ describe("CommandCode catalog", () => {
     expect(
       toCommandCodeModelConfig(item({ reasoning: { state: "known", value: true } }), staticMetadata)
         .variants,
-    ).toEqual({ high: { reasoningEffort: "high" }, max: { reasoningEffort: "max" } });
+    ).toEqual([
+      { id: "high", settings: { reasoningEffort: "high" } },
+      { id: "max", settings: { reasoningEffort: "max" } },
+    ]);
     expect(
       toCommandCodeModelConfig(
         item({ reasoningOptions: { state: "known", value: [] } }),
         staticMetadata,
       ).variants,
-    ).toBeUndefined();
+    ).toEqual([]);
     expect(
       toCommandCodeModelConfig(
         item({ reasoningOptions: { state: "blocked" }, outputLimit: { state: "blocked" } }),
         staticMetadata,
       ),
     ).toMatchObject({ limit: { output: 64000 } });
-    expect(
-      toCommandCodeModelConfig(item(), undefined),
-    ).toMatchObject({ limit: { context: 1000000, output: 64000 } });
+    expect(toCommandCodeModelConfig(item(), undefined)).toMatchObject({
+      limit: { context: 1000000, output: 64000 },
+    });
   });
 
   it("treats endpoint effort options as reasoning support", () => {
@@ -205,21 +208,19 @@ describe("CommandCode catalog", () => {
     );
 
     expect(model).toMatchObject({
-      reasoning: true,
-      variants: { high: { reasoningEffort: "high" } },
+      variants: [{ id: "high", settings: { reasoningEffort: "high" } }],
     });
   });
 
   it("advertises image input only for models with vision support", () => {
     expect(
       toCommandCodeModelConfig(item(), { vision: true, sourceProvider: "static" }),
-    ).toMatchObject({ attachment: true, modalities: { input: ["text", "image"] } });
+    ).toMatchObject({ capabilities: { input: ["text", "image"] } });
     expect(
       toCommandCodeModelConfig(item(), { vision: false, sourceProvider: "static" }),
-    ).toMatchObject({ attachment: false, modalities: { input: ["text"] } });
+    ).toMatchObject({ capabilities: { input: ["text"] } });
     expect(toCommandCodeModelConfig(item(), undefined)).toMatchObject({
-      attachment: true,
-      modalities: { input: ["text", "image"] },
+      capabilities: { input: ["text", "image"] },
     });
   });
 
@@ -237,5 +238,17 @@ describe("CommandCode catalog", () => {
 
     await expect(fetchCommandCodeCatalog(fetcher)).resolves.toHaveLength(1);
     expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("resolves the catalog URL from the environment when overridden", () => {
+    expect(resolveCommandCodeCatalogURL({})).toBe(
+      "https://api.commandcode.ai/provider/v1/models",
+    );
+    expect(resolveCommandCodeCatalogURL({ COMMANDCODE_CATALOG_URL: "" })).toBe(
+      "https://api.commandcode.ai/provider/v1/models",
+    );
+    expect(resolveCommandCodeCatalogURL({ COMMANDCODE_CATALOG_URL: "http://127.0.0.1:1/x" })).toBe(
+      "http://127.0.0.1:1/x",
+    );
   });
 });
