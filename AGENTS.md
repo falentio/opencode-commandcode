@@ -58,6 +58,11 @@ pnpm release        # bumpp: bump + commit + tag
   `Schema validation failed`.
 - `src/alpha-wire.ts` is the wire translation and is intentionally untouched.
   Treat changes there as a separate, deliberate change.
+- Keep the built `dist/` free of bare specifiers: `vp pack` inlines the source
+  and the only remaining imports should be node builtins. The plugin is loaded
+  by opencode's embedded Bun runtime, where a bare specifier only resolves if
+  the package happens to be installed for the loading project. `src/brands.ts`
+  exists so the brands never pull `@opencode/schema` into the bundle.
 - The v2 packages are **peer dependencies**; keep them out of `dependencies`.
 - Only `dist/` is published (`files` in `package.json`). Never add source to the publish payload.
 - `publishConfig.access` must stay `public` — scoped packages default to private and the publish will fail otherwise.

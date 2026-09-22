@@ -9,9 +9,10 @@ export type IntegrationID = Integration.Info["id"];
 export type Money = Model.Info["cost"][number]["input"];
 
 // `effect` `Schema.brand` values are nominal only in the type system: at runtime
-// every one of them is the plain value it wraps. opencode's plugin runtime
-// cannot resolve this package's `@opencode/schema` dependency for a bare
-// specifier, so the brands are reattached here instead of via `Schema.make`.
+// every one of them is the plain value it wraps. The brands are reattached here
+// rather than through `Schema.make` so the built plugin keeps importing nothing
+// but node builtins, and therefore needs no bare specifier to resolve at load
+// time. See AGENTS.md for the constraint this protects.
 export function modelID(value: string): ModelID {
   return value as ModelID;
 }
