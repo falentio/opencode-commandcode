@@ -229,16 +229,6 @@ function decodeOpenAIChatRequest(payload: unknown): OpenAIChatRequest {
   };
 }
 
-async function readRequestBody(body: RequestInit["body"]): Promise<unknown> {
-  if (body == null) throw new Error("CommandCode received an empty OpenAI request body");
-  const text = typeof body === "string" ? body : await new Response(body).text();
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error("CommandCode received malformed OpenAI request JSON");
-  }
-}
-
 function newRequestUUID(): UUID {
   return makeUUID(randomUUID());
 }
@@ -301,11 +291,6 @@ export async function translateChatCompletion(
   });
   const wrapped = await inspectAndWrapAlphaResponse(response, request.model);
   return body.stream === true ? wrapped : collectOpenAISseAsJson(wrapped, request.model);
-}
-
-export function makeCommandCodeFetch(options: CommandCodeRuntimeOptions = {}): FetchLike {
-  return async (_input, init) =>
-    translateChatCompletion(await readRequestBody(init?.body), options, init?.signal ?? undefined);
 }
 
 export type CommandCodeProxyOptions = CommandCodeRuntimeOptions & {
