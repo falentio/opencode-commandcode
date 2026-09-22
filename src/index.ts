@@ -13,6 +13,14 @@ export const COMMAND_CODE_PROVIDER_ID = "commandcode";
 // opencode accepts a `LanguageModel` only from its own bundled provider runtime.
 // Any other specifier yields one built from a foreign module instance, which
 // opencode rejects while resolving the model.
+//
+// Do not replace this with a custom package, and do not add `@opencode/ai` as a
+// dependency to make a custom package work. A custom specifier fails at model
+// resolution, and if opencode ever changes its alias the failure reads
+// `Cannot find package '@opencode/ai'`, which points at this plugin rather than
+// at opencode. Adding the dependency does not fix that: it produces a second
+// copy of the runtime, and opencode then rejects the model with
+// `Schema validation failed`.
 export const COMMAND_CODE_PROVIDER_PACKAGE = "@opencode/ai/providers/openai-compatible";
 
 export type CommandCodePluginDependencies = {

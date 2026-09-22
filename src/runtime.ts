@@ -35,13 +35,17 @@ export type CommandCodeRuntimeOptions = {
 // from /tmp/opencode/cmd-llm-api.verbose.md, not this package's version.
 const MIRRORED_COMMAND_CODE_VERSION = "1.54.1";
 
-// The gateway validates `params.max_tokens` with a hard `<= 200000` bound.
-// Probed live: 200001 is rejected on every model with
+// The gateway validates `params.max_tokens` against a hard `<= 200000` bound,
+// independent of the model. Probed live against the real gateway: 200001 and
+// 1000000 are both rejected with
 // `Too big: expected number to be <=200000 at "params.max_tokens"`, while
-// 200000 is accepted even on a model whose own declared output limit is
-// 32768, so the bound is a field validation and not a per-model limit.
-// Without the clamp, every catalog model whose output limit exceeds the bound
-// fails every request.
+// 200000 completes a generation. The bound is a field validation, not a
+// per-model limit: 200000 is accepted for a model whose entry in
+// models-dev.generated.ts declares a smaller limit, and the live catalog
+// carries no per-model output limit at all.
+// The static table in models-dev.generated.ts still declares limits above the
+// bound for several models, so without this clamp those models fail every
+// request.
 export const COMMAND_CODE_MAX_OUTPUT_TOKENS = 200000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
