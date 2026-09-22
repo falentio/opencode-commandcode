@@ -155,7 +155,11 @@ describe("CommandCode proxy runtime", () => {
     const first = `${JSON.stringify({ type: "text-delta", text: "hello" })}\n`;
     const rest = `${JSON.stringify({ type: "finish", finishReason: "stop" })}\n`;
     const { stream, release } = gatedStream(first, rest);
-    const fetcher: FetchLike = async () => new Response(stream);
+    const sent: Record<string, unknown>[] = [];
+    const fetcher: FetchLike = async (_input, init) => {
+      sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(stream);
+    };
     const proxy = await makeProxy({ fetch: fetcher });
 
     const response = await within(
@@ -180,6 +184,9 @@ describe("CommandCode proxy runtime", () => {
     }
     expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
     expect(text).toContain('"finish_reason":"stop"');
+
+    const params = sent[0]?.params as Record<string, unknown> | undefined;
+    expect(params?.stream).toBe(true);
   });
 
   it("cancels the upstream request when the client disconnects mid-stream", async () => {
