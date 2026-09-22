@@ -318,6 +318,24 @@ function writeError(response: ServerResponse, status: number, message: string): 
   response.end(body);
 }
 
+// `status` is unusable once headers are out, so a mid-stream failure has to be
+// reported inside the stream. opencode's SSE parser reads `error.message` off
+// a frame and fails the turn with it, which is the streaming equivalent of the
+// 502 the non-streaming path returns.
+function writeStreamError(response: ServerResponse, error: unknown): void {
+  if (response.writableEnded) return;
+  const cause = error instanceof Error ? error.message : "unknown error";
+  const body = JSON.stringify({
+    error: { message: `CommandCode upstream stream failed: ${cause}`, type: "server_error" },
+  });
+  try {
+    response.write(`data: ${body}\n\n`);
+    response.write("data: [DONE]\n\n");
+  } catch {
+    // The client is already gone; there is no one left to report to.
+  }
+}
+
 function readIncomingBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -344,6 +362,9 @@ async function writeWebResponse(response: ServerResponse, upstream: Response): P
       if (next.done) break;
       response.write(Buffer.from(next.value));
     }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    writeStreamError(response, error);
   } finally {
     response.end();
   }

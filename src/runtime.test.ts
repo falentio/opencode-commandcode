@@ -412,4 +412,27 @@ describe("CommandCode proxy runtime", () => {
     await expect(fetch(url)).rejects.toThrow();
   });
 
-        });
+        it("emits an SSE error frame when the upstream fails mid-stream", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(`${JSON.stringify({ type: "text-delta", text: "hello" })}\n`));
+      },
+      pull() {
+        throw new Error("upstream connection reset");
+      },
+    });
+    const proxy = await makeProxy({ fetch: async () => new Response(stream) });
+
+    const response = await fetch(`${proxy.baseURL}/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ ...requestBody, stream: true }),
+    });
+
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain('"content":"hello"');
+    expect(text).toContain("CommandCode upstream stream failed: upstream connection reset");
+    expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
+  });
+});
