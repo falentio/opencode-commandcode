@@ -46,8 +46,24 @@ pnpm release        # bumpp: bump + commit + tag
 
 ## Conventions
 
-- Plugin entry is `src/index.ts` and must export a `Plugin` from `@opencode-ai/plugin`.
-- `@opencode-ai/plugin` is a **peer dependency**; keep it out of `dependencies`.
+- Plugin entry is `src/index.ts`. It **default-exports** a v2 plugin definition:
+  an object `{ id, setup(ctx) }`. It does not export a v1 `Plugin` function.
+- `setup(ctx)` must fetch the catalog and start the proxy **before** registering
+  any transform, because `ctx.*.transform` callbacks are synchronous and their
+  promise is not awaited for the mutation to land.
+- The provider must be registered with
+  `package: "@opencode/ai/providers/openai-compatible"`. opencode resolves its
+  own bundled copy for that specifier; any other specifier produces a
+  `LanguageModel` from a foreign module instance, which opencode rejects with
+  `Schema validation failed`.
+- `src/alpha-wire.ts` is the wire translation and is intentionally untouched.
+  Treat changes there as a separate, deliberate change.
+- Keep the built `dist/` free of bare specifiers: `vp pack` inlines the source
+  and the only remaining imports should be node builtins. The plugin is loaded
+  by opencode's embedded Bun runtime, where a bare specifier only resolves if
+  the package happens to be installed for the loading project. `src/brands.ts`
+  exists so the brands never pull `@opencode/schema` into the bundle.
+- The v2 packages are **peer dependencies**; keep them out of `dependencies`.
 - Only `dist/` is published (`files` in `package.json`). Never add source to the publish payload.
 - `publishConfig.access` must stay `public` — scoped packages default to private and the publish will fail otherwise.
 - `repository.url` must exactly match the GitHub repo, or npm rejects the OIDC publish.

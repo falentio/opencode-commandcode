@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
-import { createCommandCode, makeCommandCodeFetch } from "./runtime.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { FetchLike } from "./catalog.js";
+import { startCommandCodeProxy, translateChatCompletion, type CommandCodeProxyOptions } from "./runtime.js";
 
 const ndjson = [
   JSON.stringify({ type: "text-delta", text: "hello" }),
@@ -12,27 +13,93 @@ const ndjson = [
 const requestBody = {
   model: "model-a",
   messages: [{ role: "user", content: "hello" }],
-  max_output_tokens: 32,
+  max_tokens: 32,
 };
 
-describe("CommandCode runtime", () => {
-  it("constructs the exact alpha request and aggregates doGenerate output", async () => {
-    const upstream = vi.fn(
-      async (_input, init) => new Response(ndjson, { headers: init?.headers }),
-    );
-    const fetcher = makeCommandCodeFetch({ apiKey: "user_test", fetch: upstream });
+type UpstreamCall = [string, RequestInit | undefined];
 
-    const response = await fetcher("https://ignored.invalid/chat/completions", {
-      method: "POST",
-      body: JSON.stringify(requestBody),
-    });
+const open: Array<{ close: () => Promise<void> }> = [];
+
+afterEach(async () => {
+  await Promise.all(open.splice(0).map((proxy) => proxy.close()));
+});
+
+async function makeProxy(options: CommandCodeProxyOptions = {}) {
+  const proxy = await startCommandCodeProxy(options);
+  open.push(proxy);
+  return proxy;
+}
+
+async function within<T>(promise: Promise<T>, label: string, ms = 2000): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// Emits `first` immediately, then holds the stream open until `release()`.
+// A buffering implementation cannot produce output before the release.
+function gatedStream(
+  first: string,
+  rest: string,
+): { stream: ReadableStream<Uint8Array>; release: () => void } {
+  const encoder = new TextEncoder();
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let stage = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (stage === 0) {
+        stage = 1;
+        controller.enqueue(encoder.encode(first));
+        return;
+      }
+      if (stage === 1) {
+        stage = 2;
+        await gate;
+        controller.enqueue(encoder.encode(rest));
+        controller.close();
+      }
+    },
+  });
+  return { stream, release };
+}
+
+function recordingFetch(reply: () => Response): {
+  fetcher: FetchLike;
+  calls: UpstreamCall[];
+} {
+  const calls: UpstreamCall[] = [];
+  const fetcher: FetchLike = async (input, init) => {
+    calls.push([String(input), init]);
+    return reply();
+  };
+  return { fetcher, calls };
+}
+
+function sentBody(call: UpstreamCall | undefined): unknown {
+  return JSON.parse(String(call?.[1]?.body));
+}
+
+describe("CommandCode proxy runtime", () => {
+  it("translates an OpenAI request into the alpha envelope and aggregates non-streaming output", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    const response = await translateChatCompletion(requestBody, { apiKey: "user_test", fetch: fetcher });
     const result: unknown = await response.json();
-    const [input, init] = upstream.mock.calls[0];
-    const sentBody: unknown = JSON.parse(String(init?.body));
+    const call = calls[0];
+    const headers = call?.[1]?.headers;
 
-    expect(input).toBe("https://api.commandcode.ai/alpha/generate");
-    expect(init?.method).toBe("POST");
-    const headers = init?.headers;
+    expect(call?.[0]).toBe("https://api.commandcode.ai/alpha/generate");
+    expect(call?.[1]?.method).toBe("POST");
     expect(headers).toMatchObject({
       "Content-Type": "application/json",
       "User-Agent": "cli",
@@ -45,7 +112,7 @@ describe("CommandCode runtime", () => {
     expect((headers as Record<string, string>)["x-session-id"]).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     );
-    expect(sentBody).toMatchObject({
+    expect(sentBody(call)).toMatchObject({
       model: "model-a",
       stream: true,
       memory: null,
@@ -61,15 +128,9 @@ describe("CommandCode runtime", () => {
   });
 
   it("strips images on the wire when static metadata reports no vision", async () => {
-    const upstream = vi.fn(async (_input, init) => new Response(ndjson, { headers: init?.headers }));
-    const fetcher = makeCommandCodeFetch({
-      fetch: upstream,
-      metadataLookup: () => ({ vision: false, sourceProvider: "static" }),
-    });
-
-    await fetcher("https://ignored.invalid/chat/completions", {
-      method: "POST",
-      body: JSON.stringify({
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    await translateChatCompletion(
+      {
         model: "model-a",
         messages: [
           {
@@ -77,11 +138,11 @@ describe("CommandCode runtime", () => {
             content: [{ type: "image_url", image_url: { url: "data:image/png;base64,abcd" } }],
           },
         ],
-      }),
-    });
+      },
+      { fetch: fetcher, metadataLookup: () => ({ vision: false, sourceProvider: "static" }) },
+    );
 
-    const sentBody: unknown = JSON.parse(String(upstream.mock.calls[0][1]?.body));
-    expect(sentBody).toMatchObject({
+    expect(sentBody(calls[0])).toMatchObject({
       params: {
         messages: [
           { role: "user", content: [{ type: "text", text: '<attached_image index="0">' }] },
@@ -90,156 +151,375 @@ describe("CommandCode runtime", () => {
     });
   });
 
-  it("keeps doStream incremental and sets nested stream true", async () => {
-    const upstream = vi.fn(
-      async (_input, init) => new Response(ndjson, { headers: init?.headers }),
+  it("keeps streaming incremental and sets nested stream true", async () => {
+    const first = `${JSON.stringify({ type: "text-delta", text: "hello" })}\n`;
+    const rest = `${JSON.stringify({ type: "finish", finishReason: "stop" })}\n`;
+    const { stream, release } = gatedStream(first, rest);
+    const sent: Record<string, unknown>[] = [];
+    const fetcher: FetchLike = async (_input, init) => {
+      sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(stream);
+    };
+    const proxy = await makeProxy({ fetch: fetcher });
+
+    const response = await within(
+      fetch(`${proxy.baseURL}/chat/completions`, {
+        method: "POST",
+        body: JSON.stringify({ ...requestBody, stream: true }),
+      }),
+      "the first streamed chunk",
     );
-    const fetcher = makeCommandCodeFetch({ fetch: upstream });
-    const response = await fetcher("https://ignored.invalid/chat/completions", {
+    const reader = response.body!.getReader();
+    const firstChunk = await within(reader.read(), "the first streamed chunk");
+    expect(new TextDecoder().decode(firstChunk.value)).toContain('"content":"hello"');
+
+    // The upstream is still open here, so a buffered implementation would have
+    // produced nothing yet.
+    release();
+    let text = new TextDecoder().decode(firstChunk.value);
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      text += new TextDecoder().decode(next.value);
+    }
+    expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
+    expect(text).toContain('"finish_reason":"stop"');
+
+    const params = sent[0]?.params as Record<string, unknown> | undefined;
+    expect(params?.stream).toBe(true);
+  });
+
+  it("cancels the upstream request when the client disconnects mid-stream", async () => {
+    let upstreamAborted = false;
+    let signal: AbortSignal | undefined;
+    const fetcher: FetchLike = async (_input, init) => {
+      signal = init?.signal ?? undefined;
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(`${JSON.stringify({ type: "text-delta", text: "hello" })}\n`));
+          signal?.addEventListener("abort", () => {
+            upstreamAborted = true;
+            controller.error(new DOMException("aborted", "AbortError"));
+          });
+        },
+      });
+      return new Response(stream);
+    };
+    const proxy = await makeProxy({ fetch: fetcher });
+
+    const client = new AbortController();
+    const pending = fetch(`${proxy.baseURL}/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ ...requestBody, stream: true }),
+      signal: client.signal,
+    });
+    const response = await within(pending, "the streamed response to start");
+    const reader = response.body!.getReader();
+    await within(reader.read(), "the first streamed chunk");
+    client.abort();
+    await reader.cancel().catch(() => undefined);
+
+    const deadline = Date.now() + 2000;
+    while (!upstreamAborted && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    expect(upstreamAborted).toBe(true);
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("does not abort an upstream request that runs to completion", async () => {
+    let signal: AbortSignal | undefined;
+    const fetcher: FetchLike = async (_input, init) => {
+      signal = init?.signal ?? undefined;
+      return new Response(ndjson);
+    };
+    const proxy = await makeProxy({ fetch: fetcher });
+
+    const response = await fetch(`${proxy.baseURL}/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify({ ...requestBody, stream: true }),
+    });
+    const text = await response.text();
+    expect(text).toContain('"content":"hello"');
+    expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
+
+    // Give the server's own response "close" event time to fire.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(signal?.aborted).toBe(false);
+  });
+
+  it("accepts max_completion_tokens from the bundled OpenAI-compatible route", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    await translateChatCompletion(
+      {
+        model: "model-a",
+        messages: [{ role: "user", content: "hello" }],
+        max_completion_tokens: 32,
+      },
+      { fetch: fetcher },
+    );
+
+    expect(sentBody(calls[0])).toMatchObject({ params: { max_tokens: 32 } });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("prefers max_tokens over max_completion_tokens when both are present", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    await translateChatCompletion(
+      {
+        model: "model-a",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 11,
+        max_completion_tokens: 22,
+      },
+      { fetch: fetcher },
+    );
+
+    expect(sentBody(calls[0])).toMatchObject({ params: { max_tokens: 11 } });
+  });
+
+  it("uses static output metadata when the request omits max tokens", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    await translateChatCompletion(
+      { model: "gpt-5.5", messages: [{ role: "user", content: "hello" }] },
+      { fetch: fetcher },
+    );
+
+    expect(sentBody(calls[0])).toMatchObject({ params: { max_tokens: 128000 } });
+  });
+
+  it("uses 64000 for direct requests without static metadata", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    await translateChatCompletion(
+      { model: "unmatched/model", messages: [{ role: "user", content: "hi" }] },
+      { fetch: fetcher },
+    );
+
+    expect(sentBody(calls[0])).toMatchObject({ params: { max_tokens: 64000 } });
+  });
+
+  it("does not forward invalid or empty reasoning effort values", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+
+    await translateChatCompletion(
+      {
+        model: "unmatched/model",
+        messages: [{ role: "user", content: "hi" }],
+        reasoning_effort: 1,
+      },
+      { fetch: fetcher },
+    );
+    await translateChatCompletion(
+      {
+        model: "unmatched/model",
+        messages: [{ role: "user", content: "hi" }],
+        reasoning_effort: "",
+      },
+      { fetch: fetcher },
+    );
+
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(sentBody(call)).toMatchObject({ params: { max_tokens: 64000 } });
+      expect(sentBody(call)).not.toHaveProperty("params.reasoning_effort");
+    }
+  });
+
+  it("forwards a valid reasoning effort as params.reasoning_effort", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    await translateChatCompletion(
+      {
+        model: "model-a",
+        messages: [{ role: "user", content: "hi" }],
+        reasoning_effort: "high",
+      },
+      { fetch: fetcher },
+    );
+
+    expect(sentBody(calls[0])).toMatchObject({ params: { reasoning_effort: "high" } });
+  });
+
+  it("does not fetch models.dev at runtime", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    await translateChatCompletion({ ...requestBody, model: "gpt-5.5" }, { fetch: fetcher });
+
+    const urls = calls.map(([input]) => String(input));
+    expect(urls).toHaveLength(1);
+    expect(urls.filter((url) => url.includes("models.dev"))).toEqual([]);
+  });
+
+  it("resolves the API key per request instead of once at startup", async () => {
+    const keys = ["user_first", "user_second"];
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    const options = { fetch: fetcher, resolveApiKey: async () => keys.shift() };
+
+    await translateChatCompletion(requestBody, options);
+    await translateChatCompletion(requestBody, options);
+
+    expect(calls[0]?.[1]?.headers).toMatchObject({ Authorization: "Bearer user_first" });
+    expect(calls[1]?.[1]?.headers).toMatchObject({ Authorization: "Bearer user_second" });
+  });
+
+  it("falls back to the environment when no connection is active", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    await translateChatCompletion(requestBody, {
+      fetch: fetcher,
+      env: { COMMANDCODE_API_KEY: "user_env" },
+    });
+
+    expect(calls[0]?.[1]?.headers).toMatchObject({ Authorization: "Bearer user_env" });
+  });
+
+  it("serves POST /v1/chat/completions as an OpenAI endpoint backed by the alpha wire", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    const proxy = await makeProxy({ fetch: fetcher });
+
+    const response = await fetch(`${proxy.baseURL}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...requestBody, stream: true }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const text = await response.text();
+    expect(text).toContain('"content":"hello"');
+    expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
+    expect(calls[0]?.[0]).toBe("https://api.commandcode.ai/alpha/generate");
+  });
+
+  it("honors the alpha URL override so a local upstream can stand in", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    await translateChatCompletion(requestBody, {
+      fetch: fetcher,
+      upstreamURL: "http://127.0.0.1:9/alpha/generate",
+    });
+
+    expect(calls[0]?.[0]).toBe("http://127.0.0.1:9/alpha/generate");
+  });
+
+  it("binds an ephemeral port on 127.0.0.1 and exposes it as baseURL", async () => {
+    const proxy = await makeProxy({ fetch: vi.fn() as unknown as FetchLike });
+
+    expect(proxy.port).toBeGreaterThan(0);
+    expect(proxy.baseURL).toBe(`http://127.0.0.1:${proxy.port}/v1`);
+  });
+
+  it("lists catalog models on GET /v1/models", async () => {
+    const proxy = await makeProxy({
+      catalog: [
+        {
+          id: "model-a" as never,
+          name: "Model A",
+          contextLength: 1000,
+          created: 1,
+        },
+      ],
+    });
+
+    const response = await fetch(`${proxy.baseURL}/models`);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      object: "list",
+      data: [
+        {
+          id: "model-a",
+          object: "model",
+          created: 1,
+          owned_by: "command-code",
+          name: "Model A",
+          context_length: 1000,
+        },
+      ],
+    });
+  });
+
+  it("rejects unknown routes with a JSON error", async () => {
+    const proxy = await makeProxy();
+    const response = await fetch(`http://127.0.0.1:${proxy.port}/nope`);
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { type: "invalid_request_error" },
+    });
+  });
+
+  it("surfaces upstream alpha errors as OpenAI error responses", async () => {
+    const { fetcher } = recordingFetch(
+      () =>
+        new Response(
+          JSON.stringify({ error: { message: "invalid api key", type: "authentication" } }),
+          { status: 401 },
+        ),
+    );
+    const proxy = await makeProxy({ fetch: fetcher });
+
+    const response = await fetch(`${proxy.baseURL}/chat/completions`, {
+      method: "POST",
+      body: JSON.stringify(requestBody),
+    });
+
+    expect(response.status).toBe(401);
+    const body: unknown = await response.json();
+    expect(JSON.stringify(body)).toContain("invalid api key");
+  });
+
+  it("closes its listener on cleanup", async () => {
+    const proxy = await startCommandCodeProxy({ fetch: vi.fn() as unknown as FetchLike });
+    const url = `${proxy.baseURL}/models`;
+    await proxy.close();
+
+    await expect(fetch(url)).rejects.toThrow();
+  });
+
+  it("closes twice without rejecting", async () => {
+    const proxy = await startCommandCodeProxy({ fetch: vi.fn() as unknown as FetchLike });
+    await proxy.close();
+    await expect(proxy.close()).resolves.toBeUndefined();
+  });
+
+  it("clamps max_tokens to the gateway's field bound", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    await translateChatCompletion(
+      { model: "deepseek/deepseek-v4-flash", messages: [{ role: "user", content: "hi" }] },
+      { fetch: fetcher },
+    );
+    await translateChatCompletion(
+      { ...requestBody, max_tokens: 384000 },
+      { fetch: fetcher },
+    );
+
+    expect(sentBody(calls[0])).toMatchObject({ params: { max_tokens: 200000 } });
+    expect(sentBody(calls[1])).toMatchObject({ params: { max_tokens: 200000 } });
+  });
+
+  it("leaves max_tokens below the bound untouched", async () => {
+    const { fetcher, calls } = recordingFetch(() => new Response(ndjson));
+    await translateChatCompletion({ ...requestBody, max_tokens: 199999 }, { fetch: fetcher });
+
+    expect(sentBody(calls[0])).toMatchObject({ params: { max_tokens: 199999 } });
+  });
+
+  it("emits an SSE error frame when the upstream fails mid-stream", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(`${JSON.stringify({ type: "text-delta", text: "hello" })}\n`));
+      },
+      pull() {
+        throw new Error("upstream connection reset");
+      },
+    });
+    const proxy = await makeProxy({ fetch: async () => new Response(stream) });
+
+    const response = await fetch(`${proxy.baseURL}/chat/completions`, {
       method: "POST",
       body: JSON.stringify({ ...requestBody, stream: true }),
     });
 
-    expect(await response.text()).toContain('"content":"hello"');
-    const sentBody: unknown = JSON.parse(String(upstream.mock.calls[0][1]?.body));
-    expect(sentBody).toMatchObject({ params: { stream: true } });
-  });
-
-  it("creates the provider factory expected by OpenCode's npm loader", () => {
-    const provider = createCommandCode({ apiKey: "user_test", fetch: vi.fn() });
-    const model = provider.languageModel("model-a");
-
-    expect(provider.specificationVersion).toBe("v3");
-    expect(model.modelId).toBe("model-a");
-  });
-
-  it("runs the complete AI SDK doGenerate path through the alpha bridge", async () => {
-    const upstream = vi.fn(
-      async (_input, init) => new Response(ndjson, { headers: init?.headers }),
-    );
-    const model = createCommandCode({ apiKey: "user_test", fetch: upstream }).languageModel(
-      "model-a",
-    );
-
-    const result = await model.doGenerate({
-      prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
-      maxOutputTokens: 32,
-      temperature: 0.3,
-      providerOptions: { openaiCompatible: { reasoningEffort: "high" } },
-    });
-
-    expect(result.content).toEqual([{ type: "text", text: "hello" }]);
-    expect(result.finishReason.unified).toBe("stop");
-    const sentBody: unknown = JSON.parse(String(upstream.mock.calls[0][1]?.body));
-    expect(sentBody).toMatchObject({ params: { reasoning_effort: "high" } });
-    expect(upstream).toHaveBeenCalledOnce();
-  });
-
-  it("uses static output metadata when doGenerate omits maxOutputTokens", async () => {
-    const upstream = vi.fn(async (_input, init) => {
-      const body: unknown = JSON.parse(String(init?.body));
-      expect(body).toMatchObject({ params: { max_tokens: 128000 } });
-      return new Response(ndjson, { headers: init?.headers });
-    });
-    const model = createCommandCode({ apiKey: "user_test", fetch: upstream }).languageModel(
-      "gpt-5.5",
-    );
-
-    await model.doGenerate({
-      prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
-      temperature: 0.3,
-    });
-
-    expect(upstream).toHaveBeenCalledOnce();
-  });
-
-  it("uses 64000 for direct requests without static metadata", async () => {
-    const upstream = vi.fn(async (_input, init) => {
-      const body: unknown = JSON.parse(String(init?.body));
-      expect(body).toMatchObject({ params: { max_tokens: 64000 } });
-      return new Response(ndjson, { headers: init?.headers });
-    });
-    const fetcher = makeCommandCodeFetch({ fetch: upstream });
-
-    await fetcher("https://ignored.invalid/chat/completions", {
-      method: "POST",
-      body: JSON.stringify({ model: "unmatched/model", messages: [{ role: "user", content: "hi" }] }),
-    });
-
-    expect(upstream).toHaveBeenCalledOnce();
-  });
-
-  it("does not forward invalid or empty reasoning effort values", async () => {
-    const upstream = vi.fn(async (_input, init) => {
-      const body: unknown = JSON.parse(String(init?.body));
-      expect(body).toMatchObject({ params: { max_tokens: 64000 } });
-      expect(body).not.toHaveProperty("params.reasoning_effort");
-      return new Response(ndjson, { headers: init?.headers });
-    });
-    const fetcher = makeCommandCodeFetch({ fetch: upstream });
-
-    await fetcher("https://ignored.invalid/chat/completions", {
-      method: "POST",
-      body: JSON.stringify({
-        model: "unmatched/model",
-        messages: [{ role: "user", content: "hi" }],
-        reasoning_effort: 1,
-      }),
-    });
-    await fetcher("https://ignored.invalid/chat/completions", {
-      method: "POST",
-      body: JSON.stringify({
-        model: "unmatched/model",
-        messages: [{ role: "user", content: "hi" }],
-        reasoning_effort: "",
-      }),
-    });
-
-    expect(upstream).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not fetch models.dev at runtime", async () => {
-    const upstream = vi.fn(async (_input, init) => new Response(ndjson, { headers: init?.headers }));
-    const fetcher = makeCommandCodeFetch({ fetch: upstream });
-
-    await fetcher("https://ignored.invalid/chat/completions", {
-      method: "POST",
-      body: JSON.stringify({ ...requestBody, model: "gpt-5.5" }),
-    });
-
-    expect(upstream.mock.calls.map(([input]) => String(input))).not.toContain(
-      expect.stringContaining("models.dev"),
-    );
-  });
-
-  it("runs the complete AI SDK doStream path through the alpha bridge", async () => {
-    const upstream = vi.fn(async () => new Response(ndjson));
-    const model = createCommandCode({ apiKey: "user_test", fetch: upstream }).languageModel(
-      "model-a",
-    );
-
-    const result = await model.doStream({
-      prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
-      maxOutputTokens: 32,
-      temperature: 0.3,
-    });
-    const reader = result.stream.getReader();
-    const parts: unknown[] = [];
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      parts.push(next.value);
-    }
-
-    expect(parts).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: "text-delta", delta: "hello" }),
-        expect.objectContaining({
-          type: "finish",
-          finishReason: expect.objectContaining({ unified: "stop" }),
-        }),
-      ]),
-    );
-    expect(upstream).toHaveBeenCalledOnce();
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain('"content":"hello"');
+    expect(text).toContain("CommandCode upstream stream failed: upstream connection reset");
+    expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
   });
 });

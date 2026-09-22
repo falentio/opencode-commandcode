@@ -1,4 +1,5 @@
 allowBuilds:
   msgpackr-extract: true
+  protobufjs: false
 overrides:
   vite: npm:@voidzero-dev/vite-plus-core@latest
