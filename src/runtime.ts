@@ -1,5 +1,5 @@
-import { createOpenAICompatible, type OpenAICompatibleProvider } from "@ai-sdk/openai-compatible";
 import { randomUUID } from "node:crypto";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import {
   buildAlphaRequest,
   collectOpenAISseAsJson,
@@ -11,13 +11,23 @@ import {
   type OpenAIToolCall,
   type UUID,
 } from "./alpha-wire.js";
-import { COMMAND_CODE_ALPHA_URL, makeModelId, type FetchLike } from "./catalog.js";
+import {
+  makeModelId,
+  resolveCommandCodeAlphaURL,
+  type CommandCodeCatalog,
+  type FetchLike,
+} from "./catalog.js";
 import { lookupStaticModelMetadata, type StaticModelMetadataLookup } from "./model-metadata.js";
+
+export const COMMAND_CODE_API_KEY_ENV = "COMMANDCODE_API_KEY";
 
 export type CommandCodeRuntimeOptions = {
   apiKey?: string;
   fetch?: FetchLike;
   metadataLookup?: StaticModelMetadataLookup;
+  upstreamURL?: string;
+  env?: Record<string, string | undefined>;
+  resolveApiKey?: () => Promise<string | undefined>;
 };
 
 // Mirrored Command Code CLI version our wire matches.
@@ -184,13 +194,16 @@ function decodeOpenAIChatRequest(payload: unknown): OpenAIChatRequest {
   if (stream !== undefined && typeof stream !== "boolean")
     throw new Error("CommandCode received an invalid stream value");
 
+  // opencode's bundled OpenAI-compatible route picks the max-tokens field from
+  // the provider/baseURL, and this proxy is neither OpenAI nor a known host, so
+  // it sends `max_completion_tokens`. The alpha wire only accepts `max_tokens`.
+  const maxTokens = optionalNumber(payload, "max_tokens") ?? optionalNumber(payload, "max_completion_tokens");
+
   return {
     model: payload.model,
     messages,
     ...(stream === undefined ? {} : { stream }),
-    ...(optionalNumber(payload, "max_tokens") === undefined
-      ? {}
-      : { max_tokens: optionalNumber(payload, "max_tokens") }),
+    ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
     ...(optionalNumber(payload, "max_output_tokens") === undefined
       ? {}
       : { max_output_tokens: optionalNumber(payload, "max_output_tokens") }),
@@ -221,50 +234,216 @@ function newRequestUUID(): UUID {
   return makeUUID(randomUUID());
 }
 
-export function makeCommandCodeFetch(options: CommandCodeRuntimeOptions): FetchLike {
-  const fetcher = options.fetch ?? fetch;
-  const metadataLookup = options.metadataLookup ?? lookupStaticModelMetadata;
-
-  return async (_input, init) => {
-    const body = decodeOpenAIChatRequest(await readRequestBody(init?.body));
-    const modelId = makeModelId(body.model);
-    const staticMetadata = metadataLookup(modelId);
-    const request = buildAlphaRequest(
-      body,
-      () => new Date(),
-      newRequestUUID,
-      staticMetadata?.outputLimit,
-      staticMetadata?.vision,
-    );
-    const sessionId = newRequestUUID();
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "User-Agent": "cli",
-      "x-command-code-version": MIRRORED_COMMAND_CODE_VERSION,
-      "x-cli-environment": "production",
-      "x-session-id": sessionId,
-      Accept: "text/event-stream",
-    };
-    if (options.apiKey) headers.Authorization = `Bearer ${options.apiKey}`;
-
-    const response = await fetcher(COMMAND_CODE_ALPHA_URL, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(request),
-      signal: init?.signal,
-    });
-    const wrapped = await inspectAndWrapAlphaResponse(response, request.model);
-    return body.stream === true ? wrapped : collectOpenAISseAsJson(wrapped, request.model);
-  };
+export function resolveCommandCodeApiKey(options: CommandCodeRuntimeOptions): string | undefined {
+  if (options.apiKey) return options.apiKey;
+  const env = options.env ?? process.env;
+  const fromEnv = env[COMMAND_CODE_API_KEY_ENV] ?? env.COMMAND_CODE_API_KEY;
+  return fromEnv && fromEnv.length > 0 ? fromEnv : undefined;
 }
 
-export function createCommandCode(
+async function currentApiKey(options: CommandCodeRuntimeOptions): Promise<string | undefined> {
+  const resolved = options.resolveApiKey ? await options.resolveApiKey() : undefined;
+  return resolved && resolved.length > 0 ? resolved : resolveCommandCodeApiKey(options);
+}
+
+// The upstream URL is overridable so the plugin can be exercised against a
+// local stand-in for the CommandCode gateway without a real API key.
+function resolveUpstreamURL(options: CommandCodeRuntimeOptions): string {
+  if (options.upstreamURL) return options.upstreamURL;
+  return resolveCommandCodeAlphaURL(options.env ?? process.env);
+}
+
+export async function translateChatCompletion(
+  payload: unknown,
   options: CommandCodeRuntimeOptions = {},
-): OpenAICompatibleProvider {
-  return createOpenAICompatible({
-    name: "commandcode",
-    baseURL: COMMAND_CODE_ALPHA_URL,
-    apiKey: options.apiKey,
-    fetch: makeCommandCodeFetch(options),
+  signal?: AbortSignal,
+): Promise<Response> {
+  const fetcher = options.fetch ?? fetch;
+  const metadataLookup = options.metadataLookup ?? lookupStaticModelMetadata;
+  const upstreamURL = resolveUpstreamURL(options);
+  const body = decodeOpenAIChatRequest(payload);
+  const modelId = makeModelId(body.model);
+  const staticMetadata = metadataLookup(modelId);
+  const request = buildAlphaRequest(
+    body,
+    () => new Date(),
+    newRequestUUID,
+    staticMetadata?.outputLimit,
+    staticMetadata?.vision,
+  );
+  const sessionId = newRequestUUID();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "User-Agent": "cli",
+    "x-command-code-version": MIRRORED_COMMAND_CODE_VERSION,
+    "x-cli-environment": "production",
+    "x-session-id": sessionId,
+    Accept: "text/event-stream",
+  };
+  const apiKey = await currentApiKey(options);
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
+  const response = await fetcher(upstreamURL, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(request),
+    signal,
   });
+  const wrapped = await inspectAndWrapAlphaResponse(response, request.model);
+  return body.stream === true ? wrapped : collectOpenAISseAsJson(wrapped, request.model);
+}
+
+export function makeCommandCodeFetch(options: CommandCodeRuntimeOptions = {}): FetchLike {
+  return async (_input, init) =>
+    translateChatCompletion(await readRequestBody(init?.body), options, init?.signal ?? undefined);
+}
+
+export type CommandCodeProxyOptions = CommandCodeRuntimeOptions & {
+  catalog?: CommandCodeCatalog;
+  host?: string;
+};
+
+export type CommandCodeProxy = {
+  readonly port: number;
+  readonly baseURL: string;
+  close: () => Promise<void>;
+};
+
+function writeError(response: ServerResponse, status: number, message: string): void {
+  const body = JSON.stringify({ error: { message, type: "invalid_request_error" } });
+  response.writeHead(status, {
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(body),
+  });
+  response.end(body);
+}
+
+function readIncomingBody(request: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    request.on("error", reject);
+  });
+}
+
+async function writeWebResponse(response: ServerResponse, upstream: Response): Promise<void> {
+  const headers: Record<string, string> = {};
+  upstream.headers.forEach((value, key) => {
+    headers[key] = value;
+  });
+  response.writeHead(upstream.status, headers);
+  if (!upstream.body) {
+    response.end();
+    return;
+  }
+  const reader = upstream.body.getReader();
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      response.write(Buffer.from(next.value));
+    }
+  } finally {
+    response.end();
+  }
+}
+
+function handleModels(response: ServerResponse, catalog: CommandCodeCatalog | undefined): void {
+  const data = (catalog ?? []).map((item) => ({
+    id: item.id,
+    object: "model",
+    created: item.created ?? 0,
+    owned_by: "command-code",
+    name: item.name,
+    context_length: item.contextLength,
+  }));
+  const body = JSON.stringify({ object: "list", data });
+  response.writeHead(200, {
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(body),
+  });
+  response.end(body);
+}
+
+export async function startCommandCodeProxy(
+  options: CommandCodeProxyOptions = {},
+): Promise<CommandCodeProxy> {
+  const host = options.host ?? "127.0.0.1";
+  const handler = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    const url = new URL(request.url ?? "/", `http://${host}`);
+    const path = url.pathname.replace(/\/+$/, "");
+
+    if (request.method === "GET" && (path === "/v1/models" || path === "/models")) {
+      handleModels(response, options.catalog);
+      return;
+    }
+
+    if (request.method !== "POST" || path !== "/v1/chat/completions") {
+      writeError(response, 404, `CommandCode proxy has no route for ${request.method} ${path}`);
+      return;
+    }
+
+    const raw = await readIncomingBody(request);
+    let payload: unknown;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      writeError(response, 400, "CommandCode received malformed OpenAI request JSON");
+      return;
+    }
+
+    const abort = new AbortController();
+    request.on("close", () => abort.abort());
+    try {
+      const upstream = await translateChatCompletion(payload, options, abort.signal);
+      await writeWebResponse(response, upstream);
+    } catch (error) {
+      if (response.headersSent) {
+        response.end();
+        return;
+      }
+      writeError(
+        response,
+        502,
+        error instanceof Error ? error.message : "CommandCode proxy request failed",
+      );
+    }
+  };
+
+  const server: Server = createServer((request, response) => {
+    handler(request, response).catch((error: unknown) => {
+      if (response.headersSent) {
+        response.end();
+        return;
+      }
+      writeError(
+        response,
+        500,
+        error instanceof Error ? error.message : "CommandCode proxy request failed",
+      );
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, host, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+
+  const address = server.address();
+  if (address === null || typeof address === "string")
+    throw new Error("CommandCode proxy failed to bind a TCP port");
+
+  return {
+    port: address.port,
+    baseURL: `http://${host}:${address.port}/v1`,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+        server.closeAllConnections();
+      }),
+  };
 }
