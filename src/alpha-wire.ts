@@ -218,7 +218,7 @@ function optionalNumber(record: Record<string, unknown>, key: string): number | 
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function readAlphaUsage(value: Record<string, unknown>): AlphaUsage | undefined {
+function readUsageRecord(value: Record<string, unknown>): AlphaUsage | undefined {
   const inputTokenDetails = isRecord(value.inputTokenDetails)
     ? value.inputTokenDetails
     : undefined;
@@ -244,7 +244,7 @@ function readAlphaUsage(value: Record<string, unknown>): AlphaUsage | undefined 
 
 function optionalUsage(record: Record<string, unknown>, key: string): AlphaUsage | undefined {
   const value = record[key];
-  return isRecord(value) ? readAlphaUsage(value) : undefined;
+  return isRecord(value) ? readUsageRecord(value) : undefined;
 }
 
 function mergeUsage(into: AlphaUsage | undefined, extra: AlphaUsage | undefined): AlphaUsage | undefined {
@@ -816,7 +816,7 @@ export function parseAlphaEvent(line: string): AlphaEvent | undefined {
       const usage =
         optionalUsage(payload, "usage") ??
         optionalUsage(payload, "totalUsage") ??
-        readAlphaUsage(payload);
+        readUsageRecord(payload);
       return { type: "provider-metadata", ...(usage === undefined ? {} : { usage }) };
     }
     case "server_tool_result":
