@@ -24,6 +24,9 @@ export type CommandCodeRuntimeOptions = {
 // 0.18.10, so this pin follows the CLI release the wire was verified against.
 const MIRRORED_COMMAND_CODE_VERSION = "1.88.0";
 
+// The gateway rejects larger `params.max_tokens` while the static table declares larger limits.
+export const COMMAND_CODE_MAX_OUTPUT_TOKENS = 200000;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -234,6 +237,10 @@ export function makeCommandCodeFetch(options: CommandCodeRuntimeOptions): FetchL
       newRequestUUID,
       staticMetadata?.outputLimit,
       staticMetadata?.vision,
+    );
+    request.params.max_tokens = Math.min(
+      request.params.max_tokens,
+      COMMAND_CODE_MAX_OUTPUT_TOKENS,
     );
     const sessionId = newRequestUUID();
     const headers: Record<string, string> = {

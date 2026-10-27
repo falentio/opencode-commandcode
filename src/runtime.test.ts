@@ -153,6 +153,26 @@ describe("CommandCode runtime", () => {
     expect(upstream).toHaveBeenCalledOnce();
   });
 
+  it("clamps static output metadata to the gateway bound", async () => {
+    const upstream = vi.fn(async (_input, init) => {
+      const body: unknown = JSON.parse(String(init?.body));
+      expect(body).toMatchObject({ params: { max_tokens: 200000 } });
+      return new Response(ndjson, { headers: init?.headers });
+    });
+    const model = createCommandCode({
+      apiKey: "user_test",
+      fetch: upstream,
+      metadataLookup: () => ({ outputLimit: 943718, sourceProvider: "static" }),
+    }).languageModel("gpt-5.5");
+
+    await model.doGenerate({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      temperature: 0.3,
+    });
+
+    expect(upstream).toHaveBeenCalledOnce();
+  });
+
   it("uses 64000 for direct requests without static metadata", async () => {
     const upstream = vi.fn(async (_input, init) => {
       const body: unknown = JSON.parse(String(init?.body));
