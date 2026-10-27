@@ -390,6 +390,72 @@ describe("CommandCode alpha wire", () => {
     });
   });
 
+  it("reads the 1.88 usage shape from finish events", () => {
+    expect(
+      parseAlphaEvent(
+        '{"type":"finish-step","usage":{"inputTokens":7591,"inputTokenDetails":{"noCacheTokens":167,"cacheReadTokens":7424},"outputTokens":3,"totalTokens":7594}}',
+      ),
+    ).toEqual({
+      type: "finish-step",
+      usage: { inputTokens: 7591, outputTokens: 3, totalTokens: 7594, cacheReadTokens: 7424 },
+    });
+    expect(
+      parseAlphaEvent(
+        'data: {"type":"finish-step","usage":{"inputTokens":7591,"outputTokens":3,"totalTokens":7594,"cachedInputTokens":7424}}',
+      ),
+    ).toEqual({
+      type: "finish-step",
+      usage: { inputTokens: 7591, outputTokens: 3, totalTokens: 7594, cacheReadTokens: 7424 },
+    });
+  });
+
+  it("prefers nested cache reads over the legacy keys", () => {
+    expect(
+      parseAlphaEvent(
+        '{"type":"finish-step","usage":{"inputTokens":1,"inputTokenDetails":{"cacheReadTokens":2},"cacheReadTokens":1,"cachedInputTokens":3}}',
+      ),
+    ).toEqual({
+      type: "finish-step",
+      usage: { inputTokens: 1, cacheReadTokens: 2 },
+    });
+    expect(
+      parseAlphaEvent(
+        '{"type":"finish-step","usage":{"inputTokens":1,"cacheReadTokens":1,"cachedInputTokens":3}}',
+      ),
+    ).toEqual({
+      type: "finish-step",
+      usage: { inputTokens: 1, cacheReadTokens: 1 },
+    });
+  });
+
+  it("reads nested usage from provider metadata", () => {
+    expect(
+      parseAlphaEvent(
+        '{"type":"provider-metadata","usage":{"inputTokens":1,"inputTokenDetails":{"cacheReadTokens":2}}}',
+      ),
+    ).toEqual({ type: "provider-metadata", usage: { inputTokens: 1, cacheReadTokens: 2 } });
+  });
+
+  it("reports nested cache reads as cached prompt tokens", async () => {
+    const usageJson =
+      '{"inputTokens":7591,"inputTokenDetails":{"noCacheTokens":167,"cacheReadTokens":7424},"outputTokens":3,"totalTokens":7594}';
+    const upstream = new Response(
+      [
+        JSON.stringify({ type: "start" }),
+        JSON.stringify({ type: "text-delta", text: "hello" }),
+        `{"type":"finish-step","finishReason":"stop","usage":${usageJson}}`,
+        JSON.stringify({ type: "finish", finishReason: "stop" }),
+      ].join("\n"),
+    );
+    const output = new Response(alphaNdjsonToOpenAISse(upstream.body!, model));
+    const chunks = await readSseChunks(output);
+
+    expect(chunks[chunks.length - 1]).toMatchObject({
+      choices: [{ finish_reason: "stop" }],
+      usage: { total_tokens: 7594, prompt_tokens_details: { cached_tokens: 7424 } },
+    });
+  });
+
   it("normalizes an alpha error event before exposing a stream", async () => {
     const response = await inspectAndWrapAlphaResponse(
       new Response(

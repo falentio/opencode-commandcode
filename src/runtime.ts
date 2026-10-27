@@ -20,10 +20,12 @@ export type CommandCodeRuntimeOptions = {
   metadataLookup?: StaticModelMetadataLookup;
 };
 
-// Mirrored Command Code CLI version our wire matches.
-// The gateway rejects older versions, so this must track the CLI release
-// from /tmp/opencode/cmd-llm-api.verbose.md, not this package's version.
-const MIRRORED_COMMAND_CODE_VERSION = "1.54.1";
+// The gateway requires x-command-code-version and accepts any value at or above
+// 0.18.10, so this pin follows the CLI release the wire was verified against.
+const MIRRORED_COMMAND_CODE_VERSION = "1.88.0";
+
+// The gateway rejects larger `params.max_tokens` while the static table declares larger limits.
+export const COMMAND_CODE_MAX_OUTPUT_TOKENS = 200000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -235,6 +237,10 @@ export function makeCommandCodeFetch(options: CommandCodeRuntimeOptions): FetchL
       newRequestUUID,
       staticMetadata?.outputLimit,
       staticMetadata?.vision,
+    );
+    request.params.max_tokens = Math.min(
+      request.params.max_tokens,
+      COMMAND_CODE_MAX_OUTPUT_TOKENS,
     );
     const sessionId = newRequestUUID();
     const headers: Record<string, string> = {

@@ -218,14 +218,17 @@ function optionalNumber(record: Record<string, unknown>, key: string): number | 
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function optionalUsage(record: Record<string, unknown>, key: string): AlphaUsage | undefined {
-  const value = record[key];
-  if (!isRecord(value)) return undefined;
-
+function readUsageRecord(value: Record<string, unknown>): AlphaUsage | undefined {
+  const inputTokenDetails = isRecord(value.inputTokenDetails)
+    ? value.inputTokenDetails
+    : undefined;
   const inputTokens = optionalNumber(value, "inputTokens");
   const outputTokens = optionalNumber(value, "outputTokens");
   const totalTokens = optionalNumber(value, "totalTokens");
-  const cacheReadTokens = optionalNumber(value, "cacheReadTokens");
+  const cacheReadTokens =
+    (inputTokenDetails ? optionalNumber(inputTokenDetails, "cacheReadTokens") : undefined) ??
+    optionalNumber(value, "cacheReadTokens") ??
+    optionalNumber(value, "cachedInputTokens");
   const cacheWriteTokens = optionalNumber(value, "cacheWriteTokens");
   const cacheWriteTokens1h = optionalNumber(value, "cacheWriteTokens1h");
   const usage: AlphaUsage = {
@@ -237,6 +240,11 @@ function optionalUsage(record: Record<string, unknown>, key: string): AlphaUsage
     ...(cacheWriteTokens1h === undefined ? {} : { cacheWriteTokens1h }),
   };
   return Object.keys(usage).length > 0 ? usage : undefined;
+}
+
+function optionalUsage(record: Record<string, unknown>, key: string): AlphaUsage | undefined {
+  const value = record[key];
+  return isRecord(value) ? readUsageRecord(value) : undefined;
 }
 
 function mergeUsage(into: AlphaUsage | undefined, extra: AlphaUsage | undefined): AlphaUsage | undefined {
@@ -718,26 +726,6 @@ function isVisibleEvent(event: AlphaEvent | undefined): boolean {
   );
 }
 
-function readAlphaUsageFields(record: Record<string, unknown>): AlphaUsage | undefined {
-  const usage: AlphaUsage = {};
-  let found = false;
-  for (const [wireKey, usageKey] of [
-    ["inputTokens", "inputTokens"],
-    ["outputTokens", "outputTokens"],
-    ["totalTokens", "totalTokens"],
-    ["cacheReadTokens", "cacheReadTokens"],
-    ["cacheWriteTokens", "cacheWriteTokens"],
-    ["cacheWriteTokens1h", "cacheWriteTokens1h"],
-  ] as const) {
-    const value = optionalNumber(record, wireKey);
-    if (value !== undefined) {
-      usage[usageKey] = value;
-      found = true;
-    }
-  }
-  return found ? usage : undefined;
-}
-
 export function parseAlphaEvent(line: string): AlphaEvent | undefined {
   const trimmed = line.trim();
   if (!trimmed) return undefined;
@@ -828,7 +816,7 @@ export function parseAlphaEvent(line: string): AlphaEvent | undefined {
       const usage =
         optionalUsage(payload, "usage") ??
         optionalUsage(payload, "totalUsage") ??
-        readAlphaUsageFields(payload);
+        readUsageRecord(payload);
       return { type: "provider-metadata", ...(usage === undefined ? {} : { usage }) };
     }
     case "server_tool_result":
