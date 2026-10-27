@@ -36,7 +36,7 @@ describe("CommandCode runtime", () => {
     expect(headers).toMatchObject({
       "Content-Type": "application/json",
       "User-Agent": "cli",
-      "x-command-code-version": "1.54.1",
+      "x-command-code-version": "1.88.0",
       "x-cli-environment": "production",
       Accept: "text/event-stream",
       Authorization: "Bearer user_test",
