@@ -229,9 +229,7 @@ function readAlphaUsage(value: Record<string, unknown>): AlphaUsage | undefined 
     (inputTokenDetails ? optionalNumber(inputTokenDetails, "cacheReadTokens") : undefined) ??
     optionalNumber(value, "cacheReadTokens") ??
     optionalNumber(value, "cachedInputTokens");
-  const cacheWriteTokens =
-    optionalNumber(value, "cacheWriteTokens") ??
-    (inputTokenDetails ? optionalNumber(inputTokenDetails, "cacheWriteTokens") : undefined);
+  const cacheWriteTokens = optionalNumber(value, "cacheWriteTokens");
   const cacheWriteTokens1h = optionalNumber(value, "cacheWriteTokens1h");
   const usage: AlphaUsage = {
     ...(inputTokens === undefined ? {} : { inputTokens }),
